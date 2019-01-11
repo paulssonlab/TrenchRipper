@@ -6,7 +6,7 @@ import skimage as sk
 import os
 
 from skimage import filters
-from utils import timechunker,multifov
+from .utils import timechunker,multifov
 
 class kymograph_timechunker(timechunker):
     def __init__(self,input_file_prefix,output_path,fov_number,all_channels,trench_len_y=270,padding_y=20,trench_width_x=30,\
@@ -623,8 +623,8 @@ class kymograph_timechunker(timechunker):
 
 
 class kymograph_multifov(multifov):
-    def __init__(self,input_file_prefix,all_channels,trench_len_y,padding_y,trench_width_x,\
-                 fov_list,t_subsample_step=1,y_percentile=85,y_min_edge_dist=50,smoothing_kernel_y=(9,3),\
+    def __init__(self,input_file_prefix,all_channels,fov_list,trench_len_y=270,padding_y=20,trench_width_x=30,\
+                 t_subsample_step=1,y_percentile=85,y_min_edge_dist=50,smoothing_kernel_y=(9,1),\
                  triangle_nbins=50,triangle_scaling=1.,x_percentile=85,background_kernel_x=(301,1),smoothing_kernel_x=(9,1),\
                  otsu_nbins=50,otsu_scaling=1.):
         """The kymograph class is used to generate and visualize kymographs. The central function of this
@@ -837,7 +837,7 @@ class kymograph_multifov(multifov):
         trench_row_num = (np.median(edge_num_list).astype(int))//2
         return trench_row_num
 
-    def crop_y(self,i,trench_edges_y_lists,row_num_list,imported_array_list,padding_y,trench_len_y,top_orientation=0):
+    def crop_y(self,i,trench_edges_y_lists,row_num_list,imported_array_list,padding_y,trench_len_y,top_orientation):
         """Performs cropping of the images in the y-dimension.
         
         Args:

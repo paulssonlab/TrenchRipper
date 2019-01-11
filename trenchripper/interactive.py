@@ -5,11 +5,11 @@ import skimage as sk
 from skimage import filters
 from mpl_toolkits.mplot3d import Axes3D
 from matplotlib.collections import PolyCollection
-from kymograph import kymograph_multifov
+from .kymograph import kymograph_multifov
 
 class kymograph_interactive(kymograph_multifov):
-    def __init__(self,input_file_prefix,all_channels,trench_len_y,padding_y,trench_width_x,\
-                 fov_list,t_subsample_step=1,y_percentile=85,y_min_edge_dist=50,smoothing_kernel_y=(9,3),\
+    def __init__(self,input_file_prefix,all_channels,fov_list,trench_len_y=270,padding_y=20,trench_width_x=30,\
+                 t_subsample_step=1,y_percentile=85,y_min_edge_dist=50,smoothing_kernel_y=(9,1),\
                  triangle_nbins=50,triangle_scaling=1.,x_percentile=85,background_kernel_x=(301,1),smoothing_kernel_x=(9,1),\
                  otsu_nbins=50,otsu_scaling=1.):
         """The kymograph class is used to generate and visualize kymographs. The central function of this
@@ -49,16 +49,16 @@ class kymograph_interactive(kymograph_multifov):
             otsu_nbins (int): Number of bins to use when applying Otsu's method to x-dimension signal.
             otsu_scaling (float): Threshold scaling factor for Otsu's method thresholding.
         """
-        super(kymograph_interactive, self).__init__(input_file_prefix,all_channels,trench_len_y,padding_y,\
-        	trench_width_x,fov_list,t_subsample_step=t_subsample_step,y_percentile=y_percentile,y_min_edge_dist=y_min_edge_dist,\
-        	smoothing_kernel_y=smoothing_kernel_y,triangle_nbins=triangle_nbins,triangle_scaling=triangle_scaling,\
-        	x_percentile=x_percentile,background_kernel_x=background_kernel_x,smoothing_kernel_x=smoothing_kernel_x,\
-			otsu_nbins=otsu_nbins,otsu_scaling=otsu_scaling)
+        super(kymograph_interactive, self).__init__(input_file_prefix,all_channels,fov_list,trench_len_y=trench_len_y,\
+            padding_y=padding_y,trench_width_x=trench_width_x,t_subsample_step=t_subsample_step,y_percentile=y_percentile,\
+            y_min_edge_dist=y_min_edge_dist,smoothing_kernel_y=smoothing_kernel_y,triangle_nbins=triangle_nbins,\
+            triangle_scaling=triangle_scaling,x_percentile=x_percentile,background_kernel_x=background_kernel_x,\
+            smoothing_kernel_x=smoothing_kernel_x,otsu_nbins=otsu_nbins,otsu_scaling=otsu_scaling)
 
     def preview_y_precentiles(self,imported_array_list, y_percentile, smoothing_kernel_y_dim_0,\
-                          smoothing_kernel_y_dim_1,triangle_nbins,triangle_scaling):        
+                          triangle_nbins,triangle_scaling):        
 	    y_percentiles_smoothed_list = self.map_to_fovs(self.get_smoothed_y_percentiles,imported_array_list,\
-	                                                   y_percentile,(smoothing_kernel_y_dim_0,smoothing_kernel_y_dim_1))
+	                                                   y_percentile,(smoothing_kernel_y_dim_0,1))
 	    
 	    thresholds = [sk.filters.threshold_triangle(y_percentiles_smoothed,nbins=triangle_nbins)*triangle_scaling for y_percentiles_smoothed in y_percentiles_smoothed_list]
 	    self.plot_y_precentiles(y_percentiles_smoothed_list,self.fov_list,thresholds)
@@ -113,27 +113,27 @@ class kymograph_interactive(kymograph_multifov):
         
         
     def preview_y_crop(self,y_percentiles_smoothed_list, imported_array_list, triangle_nbins, triangle_scaling,\
-                       y_min_edge_dist, padding_y, trench_len_y, vertical_spacing):
+                       y_min_edge_dist, padding_y, trench_len_y, top_orientation, vertical_spacing):
         
         trench_edges_y_lists = self.map_to_fovs(self.get_trench_edges_y,y_percentiles_smoothed_list,triangle_nbins,\
                                                triangle_scaling,y_min_edge_dist)
         row_num_list = self.map_to_fovs(self.get_row_numbers,trench_edges_y_lists)
-
         cropped_in_y_list = self.map_to_fovs(self.crop_y,trench_edges_y_lists,row_num_list,imported_array_list,padding_y,\
-                                             trench_len_y)
-        self.plot_y_crop(cropped_in_y_list,imported_array_list,self.fov_list,vertical_spacing)
+                                             trench_len_y,top_orientation)
+        self.plot_y_crop(cropped_in_y_list,imported_array_list,self.fov_list,vertical_spacing,row_num_list)
         
-    def plot_y_crop(self,cropped_in_y_list,imported_array_list,fov_list,vertical_spacing,num_rows=2):
+    def plot_y_crop(self,cropped_in_y_list,imported_array_list,fov_list,vertical_spacing,row_num_list):
         fig = plt.figure()
         ax = fig.gca(projection='3d')
         
         time_list = range(1,imported_array_list[0].shape[3]+1)
         
-        nrows = num_rows*len(fov_list)
+        nrows = np.sum(row_num_list)
         ncols = len(time_list)
         
         idx = 0
         for i,cropped_in_y in enumerate(cropped_in_y_list):
+            num_rows = row_num_list[i]
             for j in range(num_rows):
                 for k,t in enumerate(time_list):
                     idx += 1
