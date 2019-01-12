@@ -1,5 +1,6 @@
 import trenchripper as tr
 import os
+import shutil
 import dask
 
 from dask.distributed import Client,progress
@@ -30,6 +31,16 @@ class dask_controller: #adapted from Charles' code
                                   cores=self.cores)
             self.workers = self.daskcluster.start_workers(self.n_workers)
             self.daskclient = Client(self.daskcluster)
+    
+    def shutdown(self):
+        self.daskcluster.stop_all_jobs()
+        for item in os.listdir("./"):
+            if "dask-worker" in item:
+                path = "./" + item
+                if os.path.isfile(path):
+                    os.remove(path)
+                elif os.path.isdir(path):
+                    shutil.rmtree(path)
             
     def printprogress(self):
         complete = len([item for item in self.futures if item.status=="finished"])
