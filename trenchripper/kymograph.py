@@ -8,8 +8,8 @@ import os
 from skimage import filters
 from .utils import timechunker,multifov
 
-class kymograph_timechunker(timechunker):
-    def __init__(self,input_file_prefix,output_path,fov_number,all_channels,trench_len_y=270,padding_y=20,trench_width_x=30,\
+class kychunker(timechunker):
+    def __init__(self,input_file_prefix="",output_path="",fov_number=0,all_channels=[""],trench_len_y=270,padding_y=20,trench_width_x=30,\
                  t_chunk=1,y_percentile=85,y_min_edge_dist=50,smoothing_kernel_y=(9,1),triangle_nbins=50,triangle_scaling=1.,\
                  top_orientation=0,x_percentile=85,background_kernel_x=(301,1),smoothing_kernel_x=(9,1),otsu_nbins=50,otsu_scaling=1.):
         """The kymograph class is used to generate kymographs using chunked computation on hdf5 arrays. The central function of this
@@ -56,8 +56,8 @@ class kymograph_timechunker(timechunker):
             otsu_nbins (int, optional): Number of bins to use when applying Otsu's method to x-dimension signal.
             otsu_scaling (float, optional): Threshold scaling factor for Otsu's method thresholding.
         """
-
-        super(kymograph_timechunker, self).__init__(input_file_prefix,output_path,fov_number,all_channels,t_chunk=t_chunk)
+    
+        super(kychunker, self).__init__(input_file_prefix,output_path,fov_number,all_channels,t_chunk=t_chunk)
         
         self.output_file_path = self.output_path+"/kymo_"+str(self.fov_number)+".hdf5"
 
@@ -586,11 +586,16 @@ class kymograph_timechunker(timechunker):
         
         self.get_crop_in_x(cropped_in_y_handle,all_midpoints_list,x_drift_list,self.trench_width_x)
         
-    def generate_kymograph(self):
+    def reinit_fov_number(self,fov_number):
+        super(kychunker, self).__init__(self.input_file_prefix,self.output_path,fov_number,self.all_channels,t_chunk=self.t_chunk)
+        self.output_file_path = self.output_path+"/kymo_"+str(self.fov_number)+".hdf5"
+        
+    def generate_kymograph(self,fov_number):
         """Master function for generating kymographs for the set of fovs specified on initialization. Writes an hdf5
         file at self.output_file_path containing kymographs of shape (trench_num,y_dim,x_dim,t_dim) for each
         row,channel combination. Dataset keys follow the convention ["[row_number]/[channel_name]"].
         """
+        self.reinit_fov_number(fov_number)
         self.writedir(self.output_path,overwrite=False)
         self.writedir(self.temp_path,overwrite=True)
         imported_hdf5_handle = self.import_hdf5("imported_hdf5","data")
