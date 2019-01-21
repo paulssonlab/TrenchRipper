@@ -734,7 +734,10 @@ class kymograph_multifov(multifov):
         hdf5_handle = h5py.File(self.input_file_prefix + str(fov) + ".hdf5", "a")
         t_len = hdf5_handle[self.seg_channel].shape[2]
         indices = list(range(0,t_len,self.t_subsample_step))
-        array = np.array([np.take(hdf5_handle[channel], indices, axis=2) for channel in self.all_channels])
+        arr_list = []
+        for channel in self.all_channels:
+            arr_list.append(np.concatenate([hdf5_handle[channel][:,:,idx][:,:,np.newaxis] for idx in indices],axis=2))
+        array = np.array(arr_list)
         hdf5_handle.close()
         return array
     

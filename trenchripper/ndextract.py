@@ -6,9 +6,10 @@ from nd2reader import ND2Reader
 from tifffile import imsave
 
 class hdf5_fov_extractor:
-    def __init__(self,nd2filename,hdf5path):
+    def __init__(self,nd2filename,hdf5path,chunk_shape=(256,256,1)):
         self.nd2filename = nd2filename
         self.hdf5path = hdf5path
+        self.chunk_shape = chunk_shape
         self.writedir(hdf5path)
     def writedir(self,directory,overwrite=False):
         if overwrite:
@@ -27,7 +28,7 @@ class hdf5_fov_extractor:
                 x_dim = metadata['width']
                 t_dim = len(nd2file.metadata['frames'])
                 hdf5_dataset = h5pyfile.create_dataset("channel_" + str(channel),\
-                                (x_dim,y_dim,t_dim), chunks=(x_dim,y_dim,1), dtype='uint16')
+                                (x_dim,y_dim,t_dim), chunks=self.chunk_shape, dtype='uint16')
                 for frame in nd2file.metadata['frames']:
                     nd2_image = nd2file.get_frame_2D(c=i, t=frame, v=fovnum)
                     hdf5_dataset[:,:,int(frame)] = nd2_image

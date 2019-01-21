@@ -5,7 +5,7 @@ import os
 from copy import deepcopy
 
 class timechunker():
-    def __init__(self,input_file_prefix,output_path,fov_number,all_channels,t_chunk=1):
+    def __init__(self,input_file_prefix,output_path,fov_number,all_channels,chunk_shape=(256,256,1)):
         """Write later...
             
         Args:
@@ -17,7 +17,7 @@ class timechunker():
             available in the input hdf5 file, with the channel used for segmenting trenches in
             the first position. NOTE: these names must match those of the input hdf5 file dataset keys.
             
-            t_chunk (str, optional): The chunk size to use when perfoming time-chunked computation.
+            chunk_shape (tuple, optional): The chunk size to use when perfoming time-chunked computation.
         """
         self.input_file_prefix = input_file_prefix
         self.output_path = output_path
@@ -30,7 +30,8 @@ class timechunker():
         self.all_channels = all_channels
         self.seg_channel = self.all_channels[0]
         
-        self.t_chunk = t_chunk
+        self.chunk_shape = chunk_shape
+        self.t_chunk = chunk_shape[2]
 
     def writedir(self,directory,overwrite=False):
         """Creates an empty directory at the specified location. If a directory is
@@ -121,12 +122,11 @@ class timechunker():
             dtype(str, optional): Specifies the array datatype to initialize an
             hdf5 file for. A 16 bit unsigned integer by default.
         """
-        chunk_shape = array.shape
-        out_shape = list(deepcopy(chunk_shape))
+        out_shape = list(array.shape)
         out_shape[t_dim_out] = t_len
         out_shape = tuple(out_shape)
         with h5py.File(self.temp_path + file_name + ".hdf5", "a") as h5pyfile:
-            hdf5_dataset = h5pyfile.create_dataset(dataset_name , out_shape, chunks=chunk_shape, dtype=dtype)
+            hdf5_dataset = h5pyfile.create_dataset(dataset_name , out_shape, chunks=self.chunk_shape, dtype=dtype)
             
     def chunk_t(self,hdf5_array_tuple,t_dim_in_tuple,t_dim_out,function,file_name,dataset_name,*args,dtype='uint16',**kwargs):
         """Applies a given function to any number of input hdf5 arrays, chunking this processing in the
