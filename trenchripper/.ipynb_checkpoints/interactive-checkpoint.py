@@ -9,7 +9,7 @@ from .kymograph import kymograph_multifov
 
 class kymograph_interactive(kymograph_multifov):
     def __init__(self,input_file_prefix,all_channels,fov_list,trench_len_y=270,padding_y=20,trench_width_x=30,\
-                 t_subsample_step=1,y_percentile=85,y_min_edge_dist=50,smoothing_kernel_y=(9,1),\
+                 t_subsample_step=1,t_range=(0,-1),y_percentile=85,y_min_edge_dist=50,smoothing_kernel_y=(9,1),\
                  triangle_nbins=50,triangle_scaling=1.,x_percentile=85,background_kernel_x=(301,1),smoothing_kernel_x=(9,1),\
                  otsu_nbins=50,otsu_scaling=1.):
         """The kymograph class is used to generate and visualize kymographs. The central function of this
@@ -50,7 +50,7 @@ class kymograph_interactive(kymograph_multifov):
             otsu_scaling (float): Threshold scaling factor for Otsu's method thresholding.
         """
         super(kymograph_interactive, self).__init__(input_file_prefix,all_channels,fov_list,trench_len_y=trench_len_y,\
-            padding_y=padding_y,trench_width_x=trench_width_x,t_subsample_step=t_subsample_step,y_percentile=y_percentile,\
+            padding_y=padding_y,trench_width_x=trench_width_x,t_subsample_step=t_subsample_step,t_range=t_range,y_percentile=y_percentile,\
             y_min_edge_dist=y_min_edge_dist,smoothing_kernel_y=smoothing_kernel_y,triangle_nbins=triangle_nbins,\
             triangle_scaling=triangle_scaling,x_percentile=x_percentile,background_kernel_x=background_kernel_x,\
             smoothing_kernel_x=smoothing_kernel_x,otsu_nbins=otsu_nbins,otsu_scaling=otsu_scaling)

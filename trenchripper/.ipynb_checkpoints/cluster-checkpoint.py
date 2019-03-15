@@ -46,8 +46,7 @@ class dask_controller: #adapted from Charles' code
         complete = len([item for item in self.futures if item.status=="finished"])
         print(str(complete) + "/" + str(len(self.futures)))
         
-    def mapfovs(self,function,ttl_fovs):
-        fovs = list(range(ttl_fovs))
+    def mapfovs(self,function,fov_list):
         def mapallfovs(fov_number,function=function):
             function(fov_number)
-        self.futures = self.daskclient.map(mapallfovs,fovs)
+        self.futures = self.daskclient.map(mapallfovs,fov_list)

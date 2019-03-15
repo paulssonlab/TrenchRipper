@@ -2,10 +2,11 @@ import numpy as np
 import h5py
 import shutil
 import os
+import ast
 from copy import deepcopy
 
 class timechunker():
-    def __init__(self,input_file_prefix,output_path,fov_number,all_channels,chunk_shape=(256,256,1)):
+    def __init__(self,input_file_prefix,output_path,fov_number,all_channels,t_chunk=1,img_chunk_size=128):
         """Write later...
             
         Args:
@@ -30,8 +31,8 @@ class timechunker():
         self.all_channels = all_channels
         self.seg_channel = self.all_channels[0]
         
-        self.chunk_shape = chunk_shape
-        self.t_chunk = chunk_shape[2]
+        self.img_chunk_size = img_chunk_size
+        self.t_chunk = t_chunk ##this might scale poorly?
 
     def writedir(self,directory,overwrite=False):
         """Creates an empty directory at the specified location. If a directory is
@@ -77,6 +78,18 @@ class timechunker():
                         str_constructor[axis*2+2:] + " = values"
         exec(str_constructor)
         
+    def hdf5_getrange(self,array,ti,tf,axis):
+        ### THIS IS A DIRTY FIX...repair later by reworking chunking function to take input for shape size
+        # I might have to re-write to have time dim in last slot...
+        if type(array) == list:
+            output = array[ti:tf]
+        else:
+            ttl_axes = len(array.shape)
+            slc = [slice(None)] * ttl_axes
+            slc[axis] = slice(ti,tf)
+            output = array[tuple(slc)]
+        return output
+        
     def write_hdf5(self,file_name,array,ti,t_len,t_dim_out,dataset_name):
         """Writes an array to a particular dataset in an hdf5 file. Positions
         in time are left variable to enable chunking the dataset in time.
@@ -91,7 +104,7 @@ class timechunker():
             dataset_name (str): The name of the hdf5 dataset to write to.
         """
         with h5py.File(self.temp_path + file_name + ".hdf5", "r+") as h5pyfile:
-            indices = list(range(ti,min(ti+self.t_chunk,t_len)))
+            indices = list(range(ti,min(ti+self.t_chunk,t_len))) ## this is clearly wrong
             self.reassign_idx(h5pyfile[dataset_name],array,indices,t_dim_out)
 
     def delete_hdf5(self,file_handle):
@@ -122,13 +135,20 @@ class timechunker():
             dtype(str, optional): Specifies the array datatype to initialize an
             hdf5 file for. A 16 bit unsigned integer by default.
         """
-        out_shape = list(array.shape)
+        out_shape = list(array.shape)   
         out_shape[t_dim_out] = t_len
         out_shape = tuple(out_shape)
+        
+        chunk_shape = np.array(list(out_shape))
+        min_arr = np.ones(chunk_shape.shape,dtype=int)*self.img_chunk_size
+        chunk_shape = np.minimum(chunk_shape,min_arr)
+        chunk_shape[t_dim_out] = 1
+        chunk_shape = tuple(chunk_shape)
+        
         with h5py.File(self.temp_path + file_name + ".hdf5", "a") as h5pyfile:
-            hdf5_dataset = h5pyfile.create_dataset(dataset_name , out_shape, chunks=self.chunk_shape, dtype=dtype)
+            hdf5_dataset = h5pyfile.create_dataset(dataset_name , out_shape, chunks=chunk_shape, dtype=dtype)
             
-    def chunk_t(self,hdf5_array_tuple,t_dim_in_tuple,t_dim_out,function,file_name,dataset_name,*args,dtype='uint16',**kwargs):
+    def chunk_t(self,hdf5_array_tuple,t_dim_in_tuple,t_dim_out,function,file_name,dataset_name,*args,dtype='uint16',t_range_tuple=None,**kwargs):
         """Applies a given function to any number of input hdf5 arrays, chunking this processing in the
         time dimension, and outputs another hdf5 file.
         
@@ -147,10 +167,25 @@ class timechunker():
         Returns:
             hdf5file: Hdf5 file handle corresponding to the output array.
         """
-        t_len = hdf5_array_tuple[0].shape[t_dim_in_tuple[0]]
+        
+        if t_range_tuple == None:
+            t_range_tuple = tuple([(0,-1) for i in range(len(hdf5_array_tuple))])
+        
+        t_initial_list = [item[0] for item in t_range_tuple]
+        if t_range_tuple[0][1] == -1:
+            t_final_0 = hdf5_array_tuple[0].shape[t_dim_in_tuple[0]]-1
+        else:
+            t_final_0 = t_range_tuple[0][1]-1
+        t_len = t_final_0 - t_initial_list[0] + 1
+
         for ti in range(0,t_len,self.t_chunk):
-            indices = list(range(ti,min(ti+self.t_chunk,t_len)))                
-            chunk_tuple = tuple(np.take(hdf5_array_tuple[i], indices, axis=t_dim_in_tuple[i]) for i in range(len(hdf5_array_tuple)))
+            tis = [ti+offset for offset in t_initial_list]
+            tf = min(ti+self.t_chunk,t_len)
+            tfs = [tf+offset for offset in t_initial_list]
+            
+            chunk_tuple = tuple(self.hdf5_getrange(hdf5_array_tuple[i],tis[i],tfs[i],t_dim_in_tuple[i])\
+                                for i in range(len(hdf5_array_tuple)))
+                        
             f_chunk = function(chunk_tuple,*args,**kwargs)
             del chunk_tuple
             if ti == 0:
