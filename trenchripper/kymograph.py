@@ -63,6 +63,7 @@ class kychunker(timechunker):
     
         super(kychunker, self).__init__(input_file_prefix,output_path,fov_number,all_channels,t_chunk=t_chunk,img_chunk_size=128)
         self.t_range = t_range
+        self.ipynb_sysout = sys.stdout
         
         self.output_file_path = self.output_path+"/kymo_"+str(self.fov_number)+".hdf5"
         self.midpoints_file_path = self.output_path+"/midpoints_"+str(self.fov_number)+".pkl"
@@ -159,7 +160,6 @@ class kychunker(timechunker):
         """
         array, = array_tuple
         out_array = np.percentile(array,y_percentile,axis=1,interpolation='lower')
-        print(out_array)
         return out_array
 
     def get_smoothed_y_percentiles(self,imported_hdf5_handle,y_percentile,smoothing_kernel_y):
@@ -197,7 +197,15 @@ class kychunker(timechunker):
         mask = img_arr>threshold
         return mask
     
-    def remove_small_rows(self,edges,y_min_edge_dist,start_above,end_above,y_len):
+    def remove_out_of_frame(self,edges,start_above,end_above):
+        if start_above:
+            edges = edges[1:]
+        if end_above:
+            edges = edges[:-1]
+        return edges
+
+    
+    def remove_small_rows(self,edges,y_min_edge_dist):
         """Filters out small rows when performing automated row detection.
         
         Args:
@@ -207,10 +215,6 @@ class kychunker(timechunker):
         Returns:
             array: Array of edges, filtered for rows that are too small.
         """
-        if start_above:
-            edges = np.append(np.array([0]),edges)
-        if end_above:
-            edges = np.append(edges,np.array([y_len-1]))
         grouped_edges = edges.reshape(-1,2)
         row_lens = np.diff(grouped_edges,axis=1)
         row_mask = (row_lens>y_min_edge_dist).flatten()
@@ -233,7 +237,8 @@ class kychunker(timechunker):
             edge_mask = (mask[1:,t] != mask[:-1,t])
             start_above,end_above = (mask[0,t]==True,mask[-1,t]==True)
             edges = np.where(edge_mask)[0]
-            edges = self.remove_small_rows(edges,y_min_edge_dist,start_above,end_above,mask.shape[0])
+            edges = self.remove_out_of_frame(edges,start_above,end_above)
+            edges = self.remove_small_rows(edges,y_min_edge_dist)
             edges_list.append(edges)
         return edges_list
 
@@ -255,46 +260,117 @@ class kychunker(timechunker):
         self.delete_hdf5(trench_mask_y_handle)
         return trench_edges_y_list
     
-    def get_row_ttl(self,trench_edges_y_list):
-        """Computes the number of trench rows in the fov, from the detected edges. Takes the true
-        value as the median detected across all time.
+#     def get_row_ttl(self,trench_edges_y_list):
+#         """Computes the number of trench rows in the fov, from the detected edges. Takes the true
+#         value as the median detected across all time.
         
-        Args:
-            trench_edges_y_list (list): List containing, for each fov entry, a list of time-sorted edge arrays.
+#         Args:
+#             trench_edges_y_list (list): List containing, for each fov entry, a list of time-sorted edge arrays.
         
-        Returns:
-            int: The number of trench rows detected in the fov.
-        """
-        edge_num_list = [len(trench_edges_y) for trench_edges_y in trench_edges_y_list]
-        trench_row_ttl = (np.median(edge_num_list).astype(int))//2
-        return trench_row_ttl
+#         Returns:
+#             int: The number of trench rows detected in the fov.
+#         """
+#         edge_num_list = [len(trench_edges_y) for trench_edges_y in trench_edges_y_list]
+#         trench_row_ttl = (np.median(edge_num_list).astype(int))//2
+#         return trench_row_ttl
+    
+#     def get_row_max(self,trench_edges_y_list):
+#         """Computes the max number of trench rows ever in the fov, from the detected edges. 
+#         Args:
+#             trench_edges_y_list (list): List containing, for each fov entry, a list of time-sorted edge arrays.
+        
+#         Returns:
+#             int: The max number of trench rows detected in the fov.
+#         """
+#         edge_num_list = [len(trench_edges_y) for trench_edges_y in trench_edges_y_list]
+#         trench_row_max = (np.max(edge_num_list).astype(int))//2
+#         return trench_row_max
+    
+    def get_init_phase_orientations(self,y_percentiles_smoothed_handle,trench_edges_y_list,pad=50,percentile=90):
+        orientations = []
+        for row in range(trench_edges_y_list[0].shape[0]//2):
+            edge_1,edge_2 = trench_edges_y_list[0][2*row],trench_edges_y_list[0][2*row+1]
+            edge_1_val = np.percentile(y_percentiles_smoothed_handle["data"][:,0][edge_1:edge_1+pad],percentile)
+            edge_2_val = np.percentile(y_percentiles_smoothed_handle["data"][:,0][edge_2-pad:edge_2],percentile)
+            if edge_2_val>edge_1_val:
+                orientations.append(0)
+            else:
+                orientations.append(1)
+        return orientations
+    
+    def get_y_midpoints(self,trench_edges_y_list):
+        midpoints = []
+        for t in range(len(trench_edges_y_list)):
+            midpoints_t = []
+            for r in range(0,trench_edges_y_list[t].shape[0],2):
+                midpoints_t.append(int(np.mean(trench_edges_y_list[t][r:r+2])))
+            midpoints.append(np.array(midpoints_t))
+        return midpoints
 
-    def crop_y(self,array_tuple,padding_y,trench_len_y,top_orientation,row_ttl):
+    def get_y_drift(self,y_midpoints):
+        """Given a list of midpoints, computes the average drift in y for every timepoint.
+
+        Args:
+            y_midpoints (list): A  list of the form [time_list,[midpoint_array]] containing
+            the trench row midpoints.
+
+        Returns:
+            list: A nested list of the form [time_list,[y_drift_int]].
+        """
+        y_drift = []
+        for t in range(len(y_midpoints)-1):
+            diff_mat = np.subtract.outer(y_midpoints[t+1],y_midpoints[t])
+            if len(diff_mat) > 0:
+                min_dist_idx = np.argmin(abs(diff_mat),axis=0)
+                min_dists = []
+                for row in range(diff_mat.shape[0]):
+                    min_dists.append(diff_mat[row,min_dist_idx[row]])
+                min_dists = np.array(min_dists)
+                median_translation = np.median(min_dists)
+            else:
+                median_translation = 0
+            y_drift.append(median_translation)
+        net_y_drift = np.append(np.array([0]),np.add.accumulate(y_drift)).astype(int)
+        return net_y_drift
+    def keep_in_frame_kernels(self,trench_edges_y_list,y_drift,max_y_dim,padding_y):
+        max_drift,min_drift = np.max(y_drift),np.min(y_drift)
+        edge_under_max = np.all((trench_edges_y_list+max_drift+padding_y)<max_y_dim,axis=0) 
+        edge_over_min = np.all((trench_edges_y_list+min_drift-padding_y)>=0,axis=0)
+        edge_in_bounds = edge_under_max*edge_over_min
+
+        valid_edge_mask = []
+        for i in range(0,len(edge_in_bounds),2):
+            if np.all(edge_in_bounds[i:i+2]):
+                valid_edge_mask+=[True,True]
+            else:
+                valid_edge_mask+=[False,False]
+
+        valid_edges_y_list = [trench_edges_y[valid_edge_mask] for trench_edges_y in trench_edges_y_list]
+        return valid_edges_y_list
+
+    def crop_y(self,array_tuple,init_trench_edges,padding_y,trench_len_y,trench_orientations):
         """Performs cropping of the images in the y-dimension.
         
         Args:
-            array_tuple (tuple): Tuple containing the imported hdf5 array (channel,y,x,t), the smoothed y
-            percentile array of shape (y,t), and the time-ordered list of edge arrays.
+            array_tuple (tuple): Tuple containing the imported hdf5 array (channel,y,x,t), 
+            and the time-ordered list of edge arrays.
             padding_y (int): Padding to be used when cropping in the y-dimension.
             trench_len_y (int): Length from the end of the tenches to be used when cropping in the 
             y-dimension.
             top_orientation (int): The orientation of the top-most row where 0 corresponds to a trench with
             a downward-oriented trench opening and 1 corresponds to a trench with an upward-oriented trench opening.
-            row_ttl (int): The total number of rows present in the fov.
         Returns:
             array: A y-cropped array of shape (rows,channels,x,y,t).
         """
         
-        imported_hdf5_array,trench_edges_y_list = array_tuple
-        
+        imported_hdf5_array,y_drift = array_tuple
+        drift_corrected_edges = np.add.outer(y_drift,init_trench_edges)
         time_list = []
         for t in range(imported_hdf5_array.shape[2]):
-            trench_edges_y = trench_edges_y_list[t]
-            
-            orientation = top_orientation
-
+            trench_edges_y = drift_corrected_edges[t]            
             row_list = []
-            for r in range(0,row_ttl):
+
+            for r,orientation in enumerate(trench_orientations):
                 if orientation == 0:
                     trench_edge_y = trench_edges_y[2*r]
                     upper = max(trench_edge_y-padding_y,0)
@@ -308,7 +384,6 @@ class kychunker(timechunker):
                     lower = min(trench_edge_y+padding_y,imported_hdf5_array.shape[1])
                     pad = upper+trench_len_y+padding_y-lower
                     output_array = np.pad(imported_hdf5_array[upper:lower,:,t],((0, pad),(0,0)),'constant')
-                orientation = (orientation+1)%2
                 row_list.append(output_array)
             time_list.append(row_list)
         cropped_in_y = np.array(time_list)
@@ -318,19 +393,6 @@ class kychunker(timechunker):
         else:
             cropped_in_y = np.moveaxis(cropped_in_y,(0,1,2,3),(3,0,1,2))
             return cropped_in_y
-#                 channel_list = []
-#                 for c in range(imported_hdf5_array.shape[0]):
-#                     output_array = imported_hdf5_array[c,upper:lower,:,t]
-#                     channel_list.append(output_array)
-#                 row_list.append(channel_list)
-#             time_list.append(row_list)
-
-#         cropped_in_y = np.array(time_list)
-#         if len(cropped_in_y.shape) != 5:
-#             return None
-#         else:
-#             cropped_in_y = np.moveaxis(cropped_in_y,(0,1,2,3,4),(4,0,1,2,3))
-#             return cropped_in_y
         
     def crop_trenches_in_y(self,imported_hdf5_handle):
         """Master function for cropping the input hdf5 file in the y-dimension.
@@ -341,17 +403,23 @@ class kychunker(timechunker):
         
         Returns:
             h5py.File: Hdf5 file handle corresponding to the y-cropped hdf5 dataset
-            "data" of shape (rows,channels,x,y,t).
+            "data" of shape (rows,channels,y,x,t). OUTDATED
         """      
         y_percentiles_smoothed_handle = self.get_smoothed_y_percentiles(imported_hdf5_handle,self.y_percentile,self.smoothing_kernel_y) 
         trench_edges_y_list = self.get_trench_edges_y(y_percentiles_smoothed_handle["data"],self.triangle_nbins,self.triangle_scaling,self.y_min_edge_dist)
-        self.delete_hdf5(y_percentiles_smoothed_handle)
-        row_ttl = self.get_row_ttl(trench_edges_y_list)
+        y_midpoints = self.get_y_midpoints(trench_edges_y_list)
+        y_drift = self.get_y_drift(y_midpoints)
+        valid_edges_y_list = self.keep_in_frame_kernels(trench_edges_y_list,y_drift,imported_hdf5_handle[self.seg_channel].shape[0],self.padding_y)
         
+        trench_orientations = self.get_init_phase_orientations(y_percentiles_smoothed_handle,valid_edges_y_list)
+        self.delete_hdf5(y_percentiles_smoothed_handle)        
         cropped_in_y_handles = []
         for channel in self.all_channels:
-            cropped_in_y_handle = self.chunk_t((imported_hdf5_handle[self.seg_channel],trench_edges_y_list),(2,1,0),3,self.crop_y,"cropped_in_y_"+str(channel),"data",\
-                                               self.padding_y,self.trench_len_y,self.top_orientation,row_ttl,t_range_tuple=(self.t_range,(0,-1))) ## problem here
+            cropped_in_y_handle = self.chunk_t((imported_hdf5_handle[self.seg_channel],y_drift),(2,0),3,self.crop_y,"cropped_in_y_"+str(channel),"data",\
+                                               valid_edges_y_list[0],self.padding_y,self.trench_len_y,trench_orientations,t_range_tuple=(self.t_range,(0,-1))) ## problem here
+#             crop_y(self,array_tuple,init_trench_edges,padding_y,trench_len_y,trench_orientations)
+#             cropped_in_y_handle = self.chunk_t((imported_hdf5_handle[self.seg_channel],trench_edges_y_list),(2,1,0),3,self.crop_y,"cropped_in_y_"+str(channel),"data",\
+#                                                self.padding_y,self.trench_len_y,self.top_orientation,row_max,t_range_tuple=(self.t_range,(0,-1))) ## problem here
             cropped_in_y_handles.append(cropped_in_y_handle)
         return cropped_in_y_handles
     
@@ -639,7 +707,7 @@ class kychunker(timechunker):
         self.reinit_fov_number(fov_number)
         self.writedir(self.output_path,overwrite=False)
         self.writedir(self.temp_path,overwrite=True)
-        imported_hdf5_handle = h5py.File(self.input_path,"r")       
+        imported_hdf5_handle = h5py.File(self.input_path,"r")
         cropped_in_y_handles = self.crop_trenches_in_y(imported_hdf5_handle)
         self.crop_trenches_in_x(cropped_in_y_handles)        
         temp_output_file_path = self.temp_path + "output.hdf5"
@@ -647,13 +715,8 @@ class kychunker(timechunker):
         for cropped_in_y_handle in cropped_in_y_handles:
             self.delete_hdf5(cropped_in_y_handle)
         shutil.rmtree(self.temp_path)
+        sys.stdout = self.ipynb_sysout
         os.remove(self.output_path+"/output_"+str(self.fov_number)+".out")
-
-
-
-
-
-
 
 
 
