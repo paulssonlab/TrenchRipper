@@ -63,7 +63,6 @@ class kychunker(timechunker):
     
         super(kychunker, self).__init__(input_file_prefix,output_path,fov_number,all_channels,t_chunk=t_chunk,img_chunk_size=128)
         self.t_range = t_range
-        self.ipynb_sysout = sys.stdout
         
         self.output_file_path = self.output_path+"/kymo_"+str(self.fov_number)+".hdf5"
         self.midpoints_file_path = self.output_path+"/midpoints_"+str(self.fov_number)+".pkl"
@@ -146,7 +145,7 @@ class kychunker(timechunker):
             h5py.File: Hdf5 file handle corresponding to the output hdf5 dataset "data", a smoothed
             percentile array of shape (y,t).
         """
-        y_percentiles_handle = self.chunk_t((imported_hdf5_handle[self.seg_channel],),(2,),1,self.get_y_percentile,"y_percentile","data",y_percentile,t_range_tuple=(self.t_range,)) #THIS IS THE BOTTLENECK; just convert to using keys for colors
+        y_percentiles_handle = self.chunk_t((imported_hdf5_handle[self.seg_channel],),(2,),1,self.get_y_percentile,"y_percentile","data",y_percentile,t_range_tuple=(self.t_range,))
         y_percentiles_smoothed_handle = self.chunk_t((y_percentiles_handle["data"],),(1,),1,self.median_filter_2d,"y_percentile_smoothed","data",smoothing_kernel_y)
         self.delete_hdf5(y_percentiles_handle)
         return y_percentiles_smoothed_handle
@@ -695,7 +694,6 @@ class kychunker(timechunker):
         super(kychunker, self).__init__(self.input_file_prefix,self.output_path,fov_number,self.all_channels,t_chunk=self.t_chunk)
         self.output_file_path = self.output_path+"/kymo_"+str(self.fov_number)+".hdf5"
         self.midpoints_file_path = self.output_path+"/midpoints_"+str(self.fov_number)+".pkl"
-        sys.stdout = open(self.output_path+"/output_"+str(self.fov_number)+".out", 'w')
         
     def generate_kymograph(self,fov_number):
         """Master function for generating kymographs for the set of fovs specified on initialization. Writes an hdf5
@@ -714,9 +712,6 @@ class kychunker(timechunker):
         for cropped_in_y_handle in cropped_in_y_handles:
             self.delete_hdf5(cropped_in_y_handle)
         shutil.rmtree(self.temp_path)
-        sys.stdout = self.ipynb_sysout
-        os.remove(self.output_path+"/output_"+str(self.fov_number)+".out")
-
 
 
 

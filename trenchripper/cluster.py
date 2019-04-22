@@ -35,7 +35,7 @@ class dask_controller: #adapted from Charles' code
     def shutdown(self):
         self.daskcluster.stop_all_jobs()
         for item in os.listdir("./"):
-            if "dask-worker" in item:
+            if "worker-" in item or "slurm-" in item or ".lock" in item:
                 path = "./" + item
                 if os.path.isfile(path):
                     os.remove(path)

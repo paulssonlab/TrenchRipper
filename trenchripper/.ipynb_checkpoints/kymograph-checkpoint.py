@@ -63,7 +63,6 @@ class kychunker(timechunker):
     
         super(kychunker, self).__init__(input_file_prefix,output_path,fov_number,all_channels,t_chunk=t_chunk,img_chunk_size=128)
         self.t_range = t_range
-        self.ipynb_sysout = sys.stdout
         
         self.output_file_path = self.output_path+"/kymo_"+str(self.fov_number)+".hdf5"
         self.midpoints_file_path = self.output_path+"/midpoints_"+str(self.fov_number)+".pkl"
@@ -116,37 +115,7 @@ class kychunker(timechunker):
         end_edge = np.mean(med_filter[-kernel[0]:-kernel_pad[0]])
         med_filter[:kernel_pad[0]] = start_edge
         med_filter[-kernel_pad[0]:] = end_edge
-        return med_filter  
-        
-#     def import_hdf5(self,file_name,dataset_name):
-#         """Stripped down version of 'self.chunk_t' that performs initial import of the hdf5 file to be
-#         processed. Simply converts the input hdf5 file's "channel" datasets into the first dimension
-#         of the array, ordered as specified by 'self.all_channels'
-        
-#         Args:
-#             file_name (str): Name of the output hdf5 file, assumed to be in the temp folder
-#             initialized by this class.
-#             dataset_name (str): The name of the hdf5 dataset to write to.
-        
-#         Returns:
-#             h5py.File: Hdf5 file handle corresponding to the output array.
-#         """
-        
-# #         with h5py.File(self.input_path, "r") as h5pyfile:
-# #             t_final = list(range(h5pyfile[self.seg_channel].shape[2]))[self.t_range[1]]
-# #             t_initial = self.t_range[0]
-# #             t_len = t_final-t_initial
-# #             for ti in range(t_initial,t_final,self.t_chunk):
-# #                 tf = min(ti+self.t_chunk,t_final)
-# #                 chunk_array = np.array([h5pyfile[channel][:,:,ti:tf] for channel in self.all_channels])
-# #                 if ti == self.t_range[0]:
-# #                     self.init_hdf5(file_name,dataset_name,chunk_array,t_len,3)
-# #                 tj = ti - t_initial
-# #                 self.write_hdf5(file_name,chunk_array,tj,t_len,3,dataset_name)
-# #                 del chunk_array
-# #             out_hdf5_handle = h5py.File(self.temp_path + file_name + ".hdf5", "r")
-# #             return out_hdf5_handle
-
+        return med_filter
     
     def get_y_percentile(self,array_tuple,y_percentile):
         """Converts an input array of shape (y,x,t) to an array of shape (y,t) using a percentile cutoff applied
@@ -176,7 +145,7 @@ class kychunker(timechunker):
             h5py.File: Hdf5 file handle corresponding to the output hdf5 dataset "data", a smoothed
             percentile array of shape (y,t).
         """
-        y_percentiles_handle = self.chunk_t((imported_hdf5_handle[self.seg_channel],),(2,),1,self.get_y_percentile,"y_percentile","data",y_percentile,t_range_tuple=(self.t_range,)) #THIS IS THE BOTTLENECK; just convert to using keys for colors
+        y_percentiles_handle = self.chunk_t((imported_hdf5_handle[self.seg_channel],),(2,),1,self.get_y_percentile,"y_percentile","data",y_percentile,t_range_tuple=(self.t_range,))
         y_percentiles_smoothed_handle = self.chunk_t((y_percentiles_handle["data"],),(1,),1,self.median_filter_2d,"y_percentile_smoothed","data",smoothing_kernel_y)
         self.delete_hdf5(y_percentiles_handle)
         return y_percentiles_smoothed_handle
@@ -198,6 +167,21 @@ class kychunker(timechunker):
         return mask
     
     def remove_out_of_frame(self,edges,start_above,end_above):
+        """Takes an array of trench row edges and removes the first/last
+        edge, if that edge does not have a proper partner (i.e. trench row mask
+        takes value True at boundaries of image).
+        
+        Args:
+            edges (array): Array of edges along y-axis.
+            start_above (bool): True if the trench row mask takes value True at the
+            starting edge of the mask.
+            end_above (bool): True if the trench row mask takes value True at the
+            ending edge of the mask.
+        
+        Returns:
+            array: Array of edges along y-axis, corrected for edge pairs that
+            are out of frame.
+        """
         if start_above:
             edges = edges[1:]
         if end_above:
@@ -260,33 +244,21 @@ class kychunker(timechunker):
         self.delete_hdf5(trench_mask_y_handle)
         return trench_edges_y_list
     
-#     def get_row_ttl(self,trench_edges_y_list):
-#         """Computes the number of trench rows in the fov, from the detected edges. Takes the true
-#         value as the median detected across all time.
-        
-#         Args:
-#             trench_edges_y_list (list): List containing, for each fov entry, a list of time-sorted edge arrays.
-        
-#         Returns:
-#             int: The number of trench rows detected in the fov.
-#         """
-#         edge_num_list = [len(trench_edges_y) for trench_edges_y in trench_edges_y_list]
-#         trench_row_ttl = (np.median(edge_num_list).astype(int))//2
-#         return trench_row_ttl
-    
-#     def get_row_max(self,trench_edges_y_list):
-#         """Computes the max number of trench rows ever in the fov, from the detected edges. 
-#         Args:
-#             trench_edges_y_list (list): List containing, for each fov entry, a list of time-sorted edge arrays.
-        
-#         Returns:
-#             int: The max number of trench rows detected in the fov.
-#         """
-#         edge_num_list = [len(trench_edges_y) for trench_edges_y in trench_edges_y_list]
-#         trench_row_max = (np.max(edge_num_list).astype(int))//2
-#         return trench_row_max
-    
     def get_init_phase_orientations(self,y_percentiles_smoothed_handle,trench_edges_y_list,pad=50,percentile=90):
+        """Automatically determines the orientations of trench rows when segmenting with phase. Only
+        considers the first timepoint. Currently the only mechanism to do this, until a manual version
+        is implemented.
+        
+        Args:
+            y_percentiles_smoothed_handle (h5py.File): Hdf5 file handle corresponding to smoothed y percentiles data. 
+            trench_edges_y_list (list): Time-ordered list of trench edge arrays.
+            pad (int, optional): Padding to be used to bin "start" and "end" values from trench row peaks.
+            percentile (int, optional): Percentile to be used when scoring the "start" and "end" values
+            from trench row peaks.
+        
+        Returns:
+            list: List of ints representing the oreintation of each trench row, starting with the top row.
+        """
         orientations = []
         for row in range(trench_edges_y_list[0].shape[0]//2):
             edge_1,edge_2 = trench_edges_y_list[0][2*row],trench_edges_y_list[0][2*row+1]
@@ -299,6 +271,14 @@ class kychunker(timechunker):
         return orientations
     
     def get_y_midpoints(self,trench_edges_y_list):
+        """Outputs trench row midpoints for each time point.
+        
+        Args:
+            trench_edges_y_list (list): Time-ordered list of trench edge arrays.
+        
+        Returns:
+            list: Time-ordered list of trench midpoint arrays.
+        """
         midpoints = []
         for t in range(len(trench_edges_y_list)):
             midpoints_t = []
@@ -332,7 +312,20 @@ class kychunker(timechunker):
             y_drift.append(median_translation)
         net_y_drift = np.append(np.array([0]),np.add.accumulate(y_drift)).astype(int)
         return net_y_drift
+
     def keep_in_frame_kernels(self,trench_edges_y_list,y_drift,max_y_dim,padding_y):
+        """Removes those kernels which drift out of the image during any timepoint.
+        
+        Args:
+            trench_edges_y_list (list): Time-ordered list of trench edge arrays.
+            y_drift (list): A nested list of the form [time_list,[y_drift_int]].
+            max_y_dim (int): Size of the y-dimension.
+            padding_y (int): Y-dimensional padding for cropping.
+        
+        Returns:
+            list: Time-ordered list of trench edge arrays, filtered for images which
+            stay in frame for all timepoints.
+        """
         max_drift,min_drift = np.max(y_drift),np.min(y_drift)
         edge_under_max = np.all((trench_edges_y_list+max_drift+padding_y)<max_y_dim,axis=0) 
         edge_over_min = np.all((trench_edges_y_list+min_drift-padding_y)>=0,axis=0)
@@ -693,10 +686,14 @@ class kychunker(timechunker):
         self.get_crop_in_x(cropped_in_y_handles,all_midpoints_list,x_drift_list,self.trench_width_x)
         
     def reinit_fov_number(self,fov_number):
+        """Reinitializes the kymograph generator on a new field of view.
+        
+        Args:
+            fov_number (int): FOV number to be processed.
+        """
         super(kychunker, self).__init__(self.input_file_prefix,self.output_path,fov_number,self.all_channels,t_chunk=self.t_chunk)
         self.output_file_path = self.output_path+"/kymo_"+str(self.fov_number)+".hdf5"
         self.midpoints_file_path = self.output_path+"/midpoints_"+str(self.fov_number)+".pkl"
-        sys.stdout = open(self.output_path+"/output_"+str(self.fov_number)+".out", 'w')
         
     def generate_kymograph(self,fov_number):
         """Master function for generating kymographs for the set of fovs specified on initialization. Writes an hdf5
@@ -715,9 +712,6 @@ class kychunker(timechunker):
         for cropped_in_y_handle in cropped_in_y_handles:
             self.delete_hdf5(cropped_in_y_handle)
         shutil.rmtree(self.temp_path)
-        sys.stdout = self.ipynb_sysout
-        os.remove(self.output_path+"/output_"+str(self.fov_number)+".out")
-
 
 
 

@@ -231,3 +231,28 @@ class multifov():
             output = func(i,*args,**kargs)
             output_list.append(output)
         return output_list
+
+class kymo_handle():
+    def __init__(self):
+        return
+    def _scale_kymo(self,wrap_arr,percentile):
+        perc_t = np.percentile(wrap_arr[:].reshape(-1,wrap_arr.shape[2]),percentile,axis=0)
+        norm_perc_t = perc_t/np.max(perc_t)
+        scaled_arr = wrap_arr/norm_perc_t[np.newaxis,np.newaxis,:]
+        return scaled_arr
+    def import_wrap(self,wrap_arr,scale=False,scale_perc=80):
+        self.kymo_arr = wrap_arr
+        if scale:
+            self.kymo_arr = self._scale_kymo(self.kymo_arr,scale_perc)
+    def import_unwrap(self,unwrap_arr,t_tot,padding=0,scale=False,scale_perc=80):
+        self.kymo_arr = unwrap_arr.reshape(unwrap_arr.shape[0], t_tot, -1)
+        self.kymo_arr = np.swapaxes(self.kymo_arr,1,2)[:,padding:-padding]
+        if scale:
+            self.kymo_arr = self._scale_kymo(self.kymo_arr,scale_perc)
+    def return_unwrap(self,padding=0):
+        padded_arr = np.pad(self.kymo_arr,((0,0),(padding,padding),(0,0)),'edge')
+        wrapped_arr = np.swapaxes(padded_arr,1,2)
+        unwrapped_arr = wrapped_arr.reshape(wrapped_arr.shape[0], -1)
+        return unwrapped_arr[:]
+    def return_wrap(self):
+        return self.kymo_arr[:]
