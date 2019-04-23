@@ -150,8 +150,24 @@ class kychunker(timechunker):
         self.delete_hdf5(y_percentiles_handle)
         return y_percentiles_smoothed_handle
     
-    def threshold(self,array_tuple,threshold):
-        """Applys a triangle threshold, returning a boolean mask.
+    # def triangle_threshold(self,array_tuple,threshold):
+    #     """Applies a triangle threshold to each timepoint in a (y,t) input array, returning a boolean mask.
+        
+    #     Args:
+    #         img_arr (array): ndarray to be thresholded.
+    #         triangle_nbins (int): Number of bins to be used to construct the thresholding
+    #         histogram.
+    #         triangle_scaling (float): Factor by which to scale the threshold.
+        
+    #     Returns:
+    #         array: Boolean mask produced by the threshold.
+    #     """
+    #     img_arr, = array_tuple
+    #     mask = img_arr>threshold
+    #     return mask
+
+    def triangle_threshold(self,array_tuple,triangle_nbins,triangle_scaling):
+        """Applies a triangle threshold to each timepoint in a (y,t) input array, returning a boolean mask.
         
         Args:
             img_arr (array): ndarray to be thresholded.
@@ -163,8 +179,9 @@ class kychunker(timechunker):
             array: Boolean mask produced by the threshold.
         """
         img_arr, = array_tuple
-        mask = img_arr>threshold
-        return mask
+        all_thresholds = np.apply_along_axis(sk.filters.threshold_triangle,0,img_arr,nbins=triangle_nbins)*triangle_scaling
+        mask = img_arr>all_thresholds
+        return triangle_mask
     
     def remove_out_of_frame(self,edges,start_above,end_above):
         """Takes an array of trench row edges and removes the first/last
@@ -238,8 +255,11 @@ class kychunker(timechunker):
         Returns:
             list: List containing arrays of edges for each timepoint, filtered for rows that are too small.
         """
-        triangle_threshold = sk.filters.threshold_triangle(y_percentiles_smoothed_array[:],nbins=triangle_nbins)*triangle_scaling
-        trench_mask_y_handle = self.chunk_t((y_percentiles_smoothed_array,),(1,),1,self.threshold,"trench_mask_y","data",triangle_threshold)
+        # triangle_threshold = sk.filters.threshold_triangle(y_percentiles_smoothed_array[:],nbins=triangle_nbins)*triangle_scaling
+        # triangle_threshold(self,array_tuple,triangle_nbins,triangle_scaling)
+
+        trench_mask_y_handle = self.chunk_t((y_percentiles_smoothed_array,),(1,),1,self.triangle_threshold,"trench_mask_y","data",\
+        	triangle_nbins,triangle_scaling)
         trench_edges_y_list = self.get_edges_from_mask(trench_mask_y_handle["data"],y_min_edge_dist)
         self.delete_hdf5(trench_mask_y_handle)
         return trench_edges_y_list
@@ -1006,6 +1026,9 @@ class kymograph_multifov(multifov):
         
         trench_edges_y_lists = self.map_to_fovs(self.get_trench_edges_y,y_percentiles_smoothed_list,self.triangle_nbins,\
                                                self.triangle_scaling,self.min_edge_dist)
+
+
+
         row_num_list = self.map_to_fovs(self.get_row_numbers,trench_edges_y_lists)
         cropped_in_y_list = self.map_to_fovs(self.crop_y,trench_edges_y_lists,row_num_list,imported_array_list,self.padding_y,\
                                              self.trench_len_y,self.top_orientation)
