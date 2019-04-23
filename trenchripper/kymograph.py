@@ -180,7 +180,7 @@ class kychunker(timechunker):
         """
         img_arr, = array_tuple
         all_thresholds = np.apply_along_axis(sk.filters.threshold_triangle,0,img_arr,nbins=triangle_nbins)*triangle_scaling
-        mask = img_arr>all_thresholds
+        triangle_mask = img_arr>all_thresholds
         return triangle_mask
     
     def remove_out_of_frame(self,edges,start_above,end_above):
