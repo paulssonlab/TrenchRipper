@@ -420,7 +420,7 @@ class kychunker(timechunker):
         
         if self.orientation_detection == 'phase':
             trench_orientations = self.get_phase_orientations(y_percentiles_smoothed_handle,valid_edges_y_list)
-        elif self.orientation_detection == 0 or orientation_detection == 1:
+        elif self.orientation_detection == 0 or self.orientation_detection == 1:
             trench_orientations = self.get_manual_orientations(valid_edges_y_list,self.orientation_detection)
         else:
             print("Orientation detection value invalid!")
