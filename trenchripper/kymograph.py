@@ -244,7 +244,7 @@ class kychunker(timechunker):
         # triangle_threshold(self,array_tuple,triangle_nbins,triangle_scaling)
 
         trench_mask_y_handle = self.chunk_t((y_percentiles_smoothed_array,),(1,),1,self.triangle_threshold,"trench_mask_y","data",\
-        	triangle_nbins,triangle_scaling)
+        triangle_nbins,triangle_scaling)
         trench_edges_y_list = self.get_edges_from_mask(trench_mask_y_handle["data"],y_min_edge_dist)
         self.delete_hdf5(trench_mask_y_handle)
         return trench_edges_y_list
@@ -1158,7 +1158,6 @@ self.map_to_fovs(self.crop_y,imported_array_list,y_drift_list,valid_edges_y_list
         else:
             cropped_in_y = np.moveaxis(cropped_in_y,(0,1,2,3,4),(4,0,1,2,3))
             return cropped_in_y
-
     # def crop_y(self,i,trench_edges_y_lists,row_num_list,imported_array_list,padding_y,trench_len_y,top_orientation):
     #     """Performs cropping of the images in the y-dimension.
         
