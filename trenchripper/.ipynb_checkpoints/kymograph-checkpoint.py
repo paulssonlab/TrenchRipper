@@ -244,7 +244,7 @@ class kychunker(timechunker):
         # triangle_threshold(self,array_tuple,triangle_nbins,triangle_scaling)
 
         trench_mask_y_handle = self.chunk_t((y_percentiles_smoothed_array,),(1,),1,self.triangle_threshold,"trench_mask_y","data",\
-        	triangle_nbins,triangle_scaling)
+        triangle_nbins,triangle_scaling)
         trench_edges_y_list = self.get_edges_from_mask(trench_mask_y_handle["data"],y_min_edge_dist)
         self.delete_hdf5(trench_mask_y_handle)
         return trench_edges_y_list
@@ -360,14 +360,14 @@ class kychunker(timechunker):
         """Performs cropping of the images in the y-dimension.
         
         Args:
-            array_tuple (tuple): Tuple containing the imported hdf5 array (channel,y,x,t), 
+            array_tuple (tuple): Tuple containing the imported hdf5 array (y,x,t), 
             and the time-ordered list of edge arrays.
             padding_y (int): Padding to be used when cropping in the y-dimension.
             trench_len_y (int): Length from the end of the tenches to be used when cropping in the 
             y-dimension.
             
         Returns:
-            array: A y-cropped array of shape (rows,channels,x,y,t).
+            array: A y-cropped array of shape (rows,y,x,t).
         """
         
         imported_hdf5_array,y_drift = array_tuple
@@ -381,14 +381,14 @@ class kychunker(timechunker):
                 if orientation == 0:
                     trench_edge_y = trench_edges_y[2*r]
                     upper = max(trench_edge_y-padding_y,0)
-                    lower = min(trench_edge_y+trench_len_y,imported_hdf5_array.shape[1])
+                    lower = min(trench_edge_y+trench_len_y,imported_hdf5_array.shape[0])
                     pad = upper+trench_len_y+padding_y-lower
                     output_array = np.pad(imported_hdf5_array[upper:lower,:,t],((pad, 0),(0,0)),'constant')
                     
                 else:
                     trench_edge_y = trench_edges_y[(2*r)+1]
                     upper = max(trench_edge_y-trench_len_y,0)
-                    lower = min(trench_edge_y+padding_y,imported_hdf5_array.shape[1])
+                    lower = min(trench_edge_y+padding_y,imported_hdf5_array.shape[0])
                     pad = upper+trench_len_y+padding_y-lower
                     output_array = np.pad(imported_hdf5_array[upper:lower,:,t],((0, pad),(0,0)),'constant')
                 row_list.append(output_array)
@@ -740,8 +740,8 @@ class kychunker(timechunker):
 class kymograph_multifov(multifov):
     def __init__(self,input_file_prefix,all_channels,fov_list,trench_len_y=270,padding_y=20,trench_width_x=30,\
                  t_subsample_step=1,t_range=(0,-1),y_percentile=85,y_min_edge_dist=50,smoothing_kernel_y=(9,1),\
-                 triangle_nbins=50,triangle_scaling=1.,x_percentile=85,background_kernel_x=(301,1),smoothing_kernel_x=(9,1),\
-                 otsu_nbins=50,otsu_scaling=1.):
+                 triangle_nbins=50,triangle_scaling=1.,orientation_detection=0,x_percentile=85,background_kernel_x=(301,1),\
+                 smoothing_kernel_x=(9,1),otsu_nbins=50,otsu_scaling=1.):
         """The kymograph class is used to generate and visualize kymographs. The central function of this
         class is the method 'generate_kymograph', which takes an hdf5 file of images from a single fov and
         outputs an hdf5 file containing kymographs from all detected trenches.
@@ -769,6 +769,9 @@ class kymograph_multifov(multifov):
             signal when cropping in the y-dimension.
             triangle_nbins (int): Number of bins to use when applying the triangle method to y-dimension signal.
             triangle_scaling (float): Threshold scaling factor for triangle method thresholding.
+            orientation_detection (int or str, optional): If str is 'phase', then will attempt to use phase features to autodetect orientation.
+            If an int is given, orientation of the top-most row will be specified manually where 0 corresponds to a trench with
+            a downward-oriented trench opening and 1 corresponds to a trench with an upward-oriented trench opening.
 
             x_percentile (int): Used for reducing signal in xyt to only the xt dimension when cropping
             in the x-dimension.
@@ -799,6 +802,8 @@ class kymograph_multifov(multifov):
         self.smoothing_kernel_y = smoothing_kernel_y
         self.triangle_nbins = triangle_nbins
         self.triangle_scaling = triangle_scaling
+        ###
+        self.orientation_detection = orientation_detection
         
 
         #### params for x
@@ -964,6 +969,44 @@ class kymograph_multifov(multifov):
         trench_edges_y_list = self.get_edges_from_mask(trench_mask_y,y_min_edge_dist)
         return trench_edges_y_list
 
+    def get_manual_orientations(self,i,valid_edges_y_lists,top_orientation):
+        valid_edges_y_list = valid_edges_y_lists[i]
+        orientation = top_orientation
+        orientations = []
+        for row in range(valid_edges_y_list[0].shape[0]//2):
+            orientations.append(orientation)
+            orientation = (orientation+1)%2
+        return orientations
+
+    def get_phase_orientations(self,i,y_percentiles_smoothed_list,valid_edges_y_lists,pad=50,percentile=90):
+        """Automatically determines the orientations of trench rows when segmenting with phase. Only
+        considers the first timepoint. Currently the only mechanism to do this, until a manual version
+        is implemented.
+        
+        Args:
+            y_percentiles_smoothed_handle (h5py.File): Hdf5 file handle corresponding to smoothed y percentiles data. 
+            valid_edges_y_list (list): Time-ordered list of trench edge arrays.
+            pad (int, optional): Padding to be used to bin "start" and "end" values from trench row peaks.
+            percentile (int, optional): Percentile to be used when scoring the "start" and "end" values
+            from trench row peaks.
+        
+        Returns:
+            list: List of ints representing the oreintation of each trench row, starting with the top row.
+        """
+
+        y_percentiles_smoothed = y_percentiles_smoothed_list[i]
+        valid_edges_y_list = valid_edges_y_lists[i]
+        orientations = []
+        for row in range(valid_edges_y_list[0].shape[0]//2):
+            edge_1,edge_2 = valid_edges_y_list[0][2*row],valid_edges_y_list[0][2*row+1]
+            edge_1_val = np.percentile(y_percentiles_smoothed[:,0][edge_1:edge_1+pad],percentile)
+            edge_2_val = np.percentile(y_percentiles_smoothed[:,0][edge_2-pad:edge_2],percentile)
+            if edge_2_val>edge_1_val:
+                orientations.append(0)
+            else:
+                orientations.append(1)
+        return orientations
+
     def get_y_midpoints(self,i,trench_edges_y_lists):
         """Outputs trench row midpoints for each time point.
         
@@ -1057,7 +1100,7 @@ class kymograph_multifov(multifov):
         trench_row_num = (np.median(edge_num_list).astype(int))//2
         return trench_row_num
 
-    def crop_y(self,i,trench_edges_y_lists,row_num_list,imported_array_list,padding_y,trench_len_y,top_orientation):
+    def crop_y(self,i,imported_array_list,y_drift_list,valid_edges_y_lists,trench_orientations_list,padding_y,trench_len_y):
         """Performs cropping of the images in the y-dimension.
         
         Args:
@@ -1074,41 +1117,97 @@ class kymograph_multifov(multifov):
         Returns:
             array: A y-cropped array of shape (rows,channels,x,y,t).
         """
-        trench_edges_y_list = trench_edges_y_lists[i]
         imported_array = imported_array_list[i]
-        trench_row_num = row_num_list[i]
+        y_drift = y_drift_list[i]
+        valid_edges_y_list = valid_edges_y_lists[i]
+        trench_orientations = trench_orientations_list[i]
 
+        drift_corrected_edges = np.add.outer(y_drift,valid_edges_y_list[0])
         time_list = []
-        for t in range(imported_array.shape[3]):
-            trench_edges_y = trench_edges_y_list[t]
-            orientation = top_orientation
 
-            top_bottom_list = []
-            for r in range(0,trench_row_num):
+        for t in range(imported_array.shape[3]):
+            trench_edges_y = drift_corrected_edges[t]
+            row_list = []
+
+            for r,orientation in enumerate(trench_orientations):
                 if orientation == 0:
                     trench_edge_y = trench_edges_y[2*r]
                     upper = max(trench_edge_y-padding_y,0)
                     lower = min(trench_edge_y+trench_len_y,imported_array.shape[1])
+                    pad = upper+trench_len_y+padding_y-lower
+
                 else:
                     trench_edge_y = trench_edges_y[(2*r)+1]
                     upper = max(trench_edge_y-trench_len_y,0)
                     lower = min(trench_edge_y+padding_y,imported_array.shape[1])
-
-                orientation = (orientation+1)%2
+                    pad = upper+trench_len_y+padding_y-lower
 
                 channel_list = []
                 for c in range(imported_array.shape[0]):
-                    output_array = imported_array[c,upper:lower,:,t]
+                    output_array = np.pad(imported_array[c,upper:lower,:,t],((pad, 0),(0,0)),'constant')
                     channel_list.append(output_array)
-                top_bottom_list.append(channel_list)
-            time_list.append(top_bottom_list)
+                row_list.append(channel_list)
+            time_list.append(row_list)
 
         cropped_in_y = np.array(time_list)
         if len(cropped_in_y.shape) != 5:
+            print("Error in crop_y")
             return None
         else:
             cropped_in_y = np.moveaxis(cropped_in_y,(0,1,2,3,4),(4,0,1,2,3))
             return cropped_in_y
+    # def crop_y(self,i,trench_edges_y_lists,row_num_list,imported_array_list,padding_y,trench_len_y,top_orientation):
+    #     """Performs cropping of the images in the y-dimension.
+        
+    #     Args:
+    #         i (int): Specifies the current fov index.
+    #         trench_edges_y_list (list): List containing, for each fov entry, a list of time-sorted edge arrays.
+    #         row_num_list (list): List containing The number of trench rows detected in each fov.
+    #         imported_array_list (list): A list containing numpy arrays containing the hdf5 file image
+    #         data of shape (channel,y,x,t).
+    #         padding_y (int): Padding to be used when cropping in the y-dimension.
+    #         trench_len_y (int): Length from the end of the tenches to be used when cropping in the 
+    #         y-dimension.
+    #         top_orientation (int, optional): The orientation of the top-most row where 0 corresponds to a trench with
+    #         a downward-oriented trench opening and 1 corresponds to a trench with an upward-oriented trench opening.
+    #     Returns:
+    #         array: A y-cropped array of shape (rows,channels,x,y,t).
+    #     """
+    #     trench_edges_y_list = trench_edges_y_lists[i]
+    #     imported_array = imported_array_list[i]
+    #     trench_row_num = row_num_list[i]
+
+    #     time_list = []
+    #     for t in range(imported_array.shape[3]):
+    #         trench_edges_y = trench_edges_y_list[t]
+    #         orientation = top_orientation
+
+    #         top_bottom_list = []
+    #         for r in range(0,trench_row_num):
+    #             if orientation == 0:
+    #                 trench_edge_y = trench_edges_y[2*r]
+    #                 upper = max(trench_edge_y-padding_y,0)
+    #                 lower = min(trench_edge_y+trench_len_y,imported_array.shape[1])
+    #             else:
+    #                 trench_edge_y = trench_edges_y[(2*r)+1]
+    #                 upper = max(trench_edge_y-trench_len_y,0)
+    #                 lower = min(trench_edge_y+padding_y,imported_array.shape[1])
+
+    #             orientation = (orientation+1)%2
+
+    #             channel_list = []
+    #             for c in range(imported_array.shape[0]):
+    #                 output_array = imported_array[c,upper:lower,:,t]
+    #                 channel_list.append(output_array)
+    #             top_bottom_list.append(channel_list)
+    #         time_list.append(top_bottom_list)
+
+    #     cropped_in_y = np.array(time_list)
+    #     if len(cropped_in_y.shape) != 5:
+    #         return None
+    #     else:
+    #         cropped_in_y = np.moveaxis(cropped_in_y,(0,1,2,3,4),(4,0,1,2,3))
+    #         return cropped_in_y
         
     def crop_trenches_in_y(self,imported_array_list):
         """Master function for cropping the input hdf5 file in the y-dimension.
@@ -1130,10 +1229,18 @@ class kymograph_multifov(multifov):
         valid_edges_y_lists = self.map_to_fovs(self.keep_in_frame_kernels,trench_edges_y_lists,\
             y_drift_list,imported_array_list,self.padding_y)
 
+        if self.orientation_detection == 'phase':
+            trench_orientations_list = self.map_to_fovs(self.get_phase_orientations,y_percentiles_smoothed_list,\
+                valid_edges_y_lists)
+        
+        elif self.orientation_detection == 0 or self.orientation_detection == 1:
+            trench_orientations_list = self.map_to_fovs(self.get_manual_orientations,valid_edges_y_lists,self.orientation_detection)
 
-        row_num_list = self.map_to_fovs(self.get_row_numbers,trench_edges_y_lists)
-        cropped_in_y_list = self.map_to_fovs(self.crop_y,trench_edges_y_lists,row_num_list,imported_array_list,self.padding_y,\
-                                             self.trench_len_y,self.top_orientation)
+        else:
+            print("Orientation detection value invalid!")
+
+        cropped_in_y_list = self.map_to_fovs(self.crop_y,imported_array_list,y_drift_list,valid_edges_y_lists,trench_orientations_list,self.padding_y,\
+                                             self.trench_len_y)
         return cropped_in_y_list
     
     def get_smoothed_x_percentiles(self,i,cropped_in_y_list,x_percentile,background_kernel_x,smoothing_kernel_x):

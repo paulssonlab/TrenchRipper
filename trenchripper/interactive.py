@@ -10,7 +10,8 @@ from .kymograph import kymograph_multifov
 class kymograph_interactive(kymograph_multifov):
     def __init__(self,input_file_prefix,all_channels,fov_list,trench_len_y=270,padding_y=20,trench_width_x=30,\
                  t_subsample_step=1,t_range=(0,-1),y_percentile=85,y_min_edge_dist=50,smoothing_kernel_y=(9,1),\
-                 triangle_nbins=50,triangle_scaling=1.,x_percentile=85,background_kernel_x=(301,1),smoothing_kernel_x=(9,1),\
+                 triangle_nbins=50,triangle_scaling=1.,orientation_detection=0,\
+                 x_percentile=85,background_kernel_x=(301,1),smoothing_kernel_x=(9,1),\
                  otsu_nbins=50,otsu_scaling=1.):
         """The kymograph class is used to generate and visualize kymographs. The central function of this
         class is the method 'generate_kymograph', which takes an hdf5 file of images from a single fov and
@@ -52,7 +53,7 @@ class kymograph_interactive(kymograph_multifov):
         super(kymograph_interactive, self).__init__(input_file_prefix,all_channels,fov_list,trench_len_y=trench_len_y,\
             padding_y=padding_y,trench_width_x=trench_width_x,t_subsample_step=t_subsample_step,t_range=t_range,y_percentile=y_percentile,\
             y_min_edge_dist=y_min_edge_dist,smoothing_kernel_y=smoothing_kernel_y,triangle_nbins=triangle_nbins,\
-            triangle_scaling=triangle_scaling,x_percentile=x_percentile,background_kernel_x=background_kernel_x,\
+            triangle_scaling=triangle_scaling,orientation_detection=orientation_detection,x_percentile=x_percentile,background_kernel_x=background_kernel_x,\
             smoothing_kernel_x=smoothing_kernel_x,otsu_nbins=otsu_nbins,otsu_scaling=otsu_scaling)
 
     def preview_y_precentiles(self,imported_array_list, y_percentile, smoothing_kernel_y_dim_0,\
@@ -113,27 +114,45 @@ class kymograph_interactive(kymograph_multifov):
         
         
     def preview_y_crop(self,y_percentiles_smoothed_list, imported_array_list, triangle_nbins, triangle_scaling,\
-                       y_min_edge_dist, padding_y, trench_len_y, top_orientation, vertical_spacing):
+                       y_min_edge_dist, padding_y, trench_len_y, orientation_detection, vertical_spacing): #### NEED TO UPDATE ARGS
+        
+        
+        ## imported_array_list,y_percentiles_smoothed_list -> cropped_in_y_list
         
         trench_edges_y_lists = self.map_to_fovs(self.get_trench_edges_y,y_percentiles_smoothed_list,triangle_nbins,\
                                                triangle_scaling,y_min_edge_dist)
-        row_num_list = self.map_to_fovs(self.get_row_numbers,trench_edges_y_lists)
-        cropped_in_y_list = self.map_to_fovs(self.crop_y,trench_edges_y_lists,row_num_list,imported_array_list,padding_y,\
-                                             trench_len_y,top_orientation)
-        self.plot_y_crop(cropped_in_y_list,imported_array_list,self.fov_list,vertical_spacing,row_num_list)
+        y_midpoints_list = self.map_to_fovs(self.get_y_midpoints,trench_edges_y_lists)
+        y_drift_list = self.map_to_fovs(self.get_y_drift,y_midpoints_list)
+        valid_edges_y_lists = self.map_to_fovs(self.keep_in_frame_kernels,trench_edges_y_lists,\
+            y_drift_list,imported_array_list,padding_y)
         
-    def plot_y_crop(self,cropped_in_y_list,imported_array_list,fov_list,vertical_spacing,row_num_list):
+        if orientation_detection == 'phase':
+            trench_orientations_list = self.map_to_fovs(self.get_phase_orientations,y_percentiles_smoothed_list,\
+                valid_edges_y_lists)
+        
+        elif orientation_detection == 0 or orientation_detection == 1:
+            trench_orientations_list = self.map_to_fovs(self.get_manual_orientations,valid_edges_y_lists,orientation_detection)
+
+        else:
+            print("Orientation detection value invalid!")
+        
+        cropped_in_y_list = self.map_to_fovs(self.crop_y,imported_array_list,y_drift_list,valid_edges_y_lists,trench_orientations_list,padding_y,\
+                                             trench_len_y)
+
+        self.plot_y_crop(cropped_in_y_list,imported_array_list,self.fov_list,vertical_spacing,trench_orientations_list)
+        
+    def plot_y_crop(self,cropped_in_y_list,imported_array_list,fov_list,vertical_spacing,trench_orientations_list):
         fig = plt.figure()
         ax = fig.gca(projection='3d')
         
         time_list = range(1,imported_array_list[0].shape[3]+1)
         
-        nrows = np.sum(row_num_list)
+        nrows = np.sum([len(item) for item in trench_orientations_list])
         ncols = len(time_list)
         
         idx = 0
         for i,cropped_in_y in enumerate(cropped_in_y_list):
-            num_rows = row_num_list[i]
+            num_rows = len(trench_orientations_list[i])
             for j in range(num_rows):
                 for k,t in enumerate(time_list):
                     idx += 1

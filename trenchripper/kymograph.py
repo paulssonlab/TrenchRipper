@@ -1099,6 +1099,7 @@ class kymograph_multifov(multifov):
         edge_num_list = [len(item) for item in trench_edges_y]
         trench_row_num = (np.median(edge_num_list).astype(int))//2
         return trench_row_num
+
     def crop_y(self,i,imported_array_list,y_drift_list,valid_edges_y_lists,trench_orientations_list,padding_y,trench_len_y):
         """Performs cropping of the images in the y-dimension.
         
@@ -1116,9 +1117,6 @@ class kymograph_multifov(multifov):
         Returns:
             array: A y-cropped array of shape (rows,channels,x,y,t).
         """
-
-self.map_to_fovs(self.crop_y,imported_array_list,y_drift_list,valid_edges_y_lists,trench_orientations_list,self.padding_y,\
-                                             self.trench_len_y)
         imported_array = imported_array_list[i]
         y_drift = y_drift_list[i]
         valid_edges_y_list = valid_edges_y_lists[i]
@@ -1149,7 +1147,7 @@ self.map_to_fovs(self.crop_y,imported_array_list,y_drift_list,valid_edges_y_list
                     output_array = np.pad(imported_array[c,upper:lower,:,t],((pad, 0),(0,0)),'constant')
                     channel_list.append(output_array)
                 row_list.append(channel_list)
-            time_list.append(top_bottom_list)
+            time_list.append(row_list)
 
         cropped_in_y = np.array(time_list)
         if len(cropped_in_y.shape) != 5:
@@ -1241,10 +1239,8 @@ self.map_to_fovs(self.crop_y,imported_array_list,y_drift_list,valid_edges_y_list
         else:
             print("Orientation detection value invalid!")
 
-
-        row_num_list = self.map_to_fovs(self.get_row_numbers,trench_edges_y_lists)
         cropped_in_y_list = self.map_to_fovs(self.crop_y,imported_array_list,y_drift_list,valid_edges_y_lists,trench_orientations_list,self.padding_y,\
-                                             self.trench_len_y,self.top_orientation)
+                                             self.trench_len_y)
         return cropped_in_y_list
     
     def get_smoothed_x_percentiles(self,i,cropped_in_y_list,x_percentile,background_kernel_x,smoothing_kernel_x):
