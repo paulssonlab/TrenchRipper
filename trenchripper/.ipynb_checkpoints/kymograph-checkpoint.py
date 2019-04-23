@@ -286,7 +286,7 @@ class kychunker(timechunker):
                 midpoints_t.append(int(np.mean(trench_edges_y_list[t][r:r+2])))
             midpoints.append(np.array(midpoints_t))
         return midpoints
-
+    
     def get_y_drift(self,y_midpoints):
         """Given a list of midpoints, computes the average drift in y for every timepoint.
 
@@ -312,6 +312,8 @@ class kychunker(timechunker):
             y_drift.append(median_translation)
         net_y_drift = np.append(np.array([0]),np.add.accumulate(y_drift)).astype(int)
         return net_y_drift
+        
+        
 
     def keep_in_frame_kernels(self,trench_edges_y_list,y_drift,max_y_dim,padding_y):
         """Removes those kernels which drift out of the image during any timepoint.
@@ -852,7 +854,7 @@ class kymograph_multifov(multifov):
         return y_percentiles_smoothed
     
     def triangle_threshold(self,img_arr,triangle_nbins,triangle_scaling):
-        """Applys a triangle threshold, returning a boolean mask.
+        """Applys a triangle threshold to each timepoint in a (y,t) input array, returning a boolean mask.
         
         Args:
             img_arr (array): Image array to be thresholded.
@@ -863,9 +865,9 @@ class kymograph_multifov(multifov):
         Returns:
             array: Boolean mask produced by the threshold.
         """
-        triangle_threshold = sk.filters.threshold_triangle(img_arr,nbins=triangle_nbins)*triangle_scaling
-        triangle_mask = img_arr>triangle_threshold
-        return triangle_mask
+        all_thresholds = np.apply_along_axis(sk.filters.threshold_triangle,0,img_arr,nbins=triangle_nbins)*triangle_scaling
+        triangle_mask = img_arr>all_thresholds
+        return triangle_mask,all_thresholds
     
     def remove_small_rows(self,edges,min_edge_dist):
         """Filters out small rows when performing automated row detection.
@@ -917,7 +919,7 @@ class kymograph_multifov(multifov):
             list: List containing arrays of edges for each timepoint, filtered for rows that are too small.
         """
         y_percentiles_smoothed = y_percentiles_smoothed_list[i]
-        trench_mask_y = self.triangle_threshold(y_percentiles_smoothed,triangle_nbins,triangle_scaling)
+        trench_mask_y,_ = self.triangle_threshold(y_percentiles_smoothed,triangle_nbins,triangle_scaling)
         trench_edges_y_list = self.get_edges_from_mask(trench_mask_y,min_edge_dist)
         return trench_edges_y_list
     

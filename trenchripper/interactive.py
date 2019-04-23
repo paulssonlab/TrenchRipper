@@ -57,11 +57,10 @@ class kymograph_interactive(kymograph_multifov):
 
     def preview_y_precentiles(self,imported_array_list, y_percentile, smoothing_kernel_y_dim_0,\
                           triangle_nbins,triangle_scaling):        
-	    y_percentiles_smoothed_list = self.map_to_fovs(self.get_smoothed_y_percentiles,imported_array_list,\
-	                                                   y_percentile,(smoothing_kernel_y_dim_0,1))
-	    
-	    thresholds = [sk.filters.threshold_triangle(y_percentiles_smoothed,nbins=triangle_nbins)*triangle_scaling for y_percentiles_smoothed in y_percentiles_smoothed_list]
-	    self.plot_y_precentiles(y_percentiles_smoothed_list,self.fov_list,thresholds)
+        y_percentiles_smoothed_list = self.map_to_fovs(self.get_smoothed_y_percentiles,imported_array_list,\
+                                                       y_percentile,(smoothing_kernel_y_dim_0,1))
+        thresholds = [self.triangle_threshold(y_percentiles_smoothed,triangle_nbins,triangle_scaling)[1] for y_percentiles_smoothed in y_percentiles_smoothed_list]
+        self.plot_y_precentiles(y_percentiles_smoothed_list,self.fov_list,thresholds)
            
     def plot_y_precentiles(self,y_percentiles_smoothed_list,fov_list,thresholds):
         fig = plt.figure()
@@ -95,8 +94,9 @@ class kymograph_interactive(kymograph_multifov):
             x_len = y_percentiles_smoothed.shape[0]
             y_len = y_percentiles_smoothed.shape[1]
             thr_x = np.repeat(np.add.accumulate(np.ones(x_len,dtype=int))[:,np.newaxis],y_len,axis=1).T.flatten()
-            thr_y = np.repeat(np.add.accumulate(np.ones(y_len,dtype=int)),x_len)       
-            thr_z = np.repeat(thresholds[j],x_len*y_len)
+            thr_y = np.repeat(np.add.accumulate(np.ones(y_len,dtype=int)),x_len)
+#             
+            thr_z = np.concatenate([np.repeat(threshold,x_len) for threshold in thresholds[j]],axis=0)
             for i in range(0,x_len*y_len,x_len):
                 ax.plot(thr_x[i:i+x_len],thr_y[i:i+x_len],thr_z[i:i+x_len],c='r')
             
