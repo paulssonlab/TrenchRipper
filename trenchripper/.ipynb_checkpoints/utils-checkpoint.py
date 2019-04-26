@@ -3,6 +3,8 @@ import h5py
 import shutil
 import os
 import ast
+
+import pandas as pd
 from copy import deepcopy
 
 class timechunker():
@@ -32,7 +34,7 @@ class timechunker():
         self.seg_channel = self.all_channels[0]
         
         self.img_chunk_size = img_chunk_size
-        self.t_chunk = t_chunk ##this might scale poorly?
+        self.t_chunk = t_chunk
 
     def writedir(self,directory,overwrite=False):
         """Creates an empty directory at the specified location. If a directory is
@@ -256,3 +258,21 @@ class kymo_handle():
         return unwrapped_arr[:]
     def return_wrap(self):
         return self.kymo_arr[:]
+
+class pandas_hdf5_handler:
+    def __init__(self,hdf5_path):
+        self.hdf5_path = hdf5_path
+        
+    def write_df(self,key,df,metadata=None):
+        with pd.HDFStore(self.hdf5_path) as store:
+            if "/" + key in store.keys():
+                store.remove(key)
+            store.put(key, df)
+            if metadata is not None:
+                store.get_storer(key).attrs.metadata = metadata
+    def read_df(self,key,read_metadata=False):           
+        with pd.HDFStore(self.hdf5_path) as store:
+            df = store.get(key)
+            if read_metadata:
+                df.metadata = store.get_storer(key).attrs.metadata
+            return df

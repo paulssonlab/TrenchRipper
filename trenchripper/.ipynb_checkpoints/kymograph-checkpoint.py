@@ -1,4 +1,5 @@
 import numpy as np
+import pandas as pd
 import h5py
 import scipy.signal
 import shutil
@@ -8,10 +9,10 @@ import pickle
 import sys
 
 from skimage import filters
-from .utils import timechunker,multifov
+from .utils import timechunker,multifov,pandas_hdf5_handler
 
 class kychunker(timechunker):
-    def __init__(self,input_file_prefix="",output_path="",fov_number=0,all_channels=[""],trench_len_y=270,padding_y=20,trench_width_x=30,\
+    def __init__(self,headpath="",fov_number=0,all_channels=[""],trench_len_y=270,padding_y=20,trench_width_x=30,\
                  t_chunk=1,t_range=(0,-1),y_percentile=85,y_min_edge_dist=50,smoothing_kernel_y=(9,1),triangle_nbins=50,triangle_scaling=1.,\
                  orientation_detection=0,x_percentile=85,background_kernel_x=(301,1),smoothing_kernel_x=(9,1),otsu_nbins=50,otsu_scaling=1.):
         """The kymograph class is used to generate kymographs using chunked computation on hdf5 arrays. The central function of this
@@ -60,9 +61,13 @@ class kychunker(timechunker):
             otsu_nbins (int, optional): Number of bins to use when applying Otsu's method to x-dimension signal.
             otsu_scaling (float, optional): Threshold scaling factor for Otsu's method thresholding.
         """
-
-    
+        
+        input_file_prefix = headpath + "/hdf5/fov_"
+        output_path = headpath + "/kymo"
+        
         super(kychunker, self).__init__(input_file_prefix,output_path,fov_number,all_channels,t_chunk=t_chunk,img_chunk_size=128)
+        self.headpath = headpath
+        self.metapath = self.headpath + "/metadata.hdf5"
         self.t_range = t_range
         
         self.output_file_path = self.output_path+"/kymo_"+str(self.fov_number)+".hdf5"
@@ -356,7 +361,7 @@ class kychunker(timechunker):
         valid_edges_y_list = [trench_edges_y[valid_edge_mask] for trench_edges_y in trench_edges_y_list]
         return valid_edges_y_list
 
-    def crop_y(self,array_tuple,init_trench_edges,padding_y,trench_len_y,trench_orientations):
+    def crop_y(self,array_tuple,init_trench_edges,padding_y,trench_len_y,trench_orientations,write_coords=False):
         """Performs cropping of the images in the y-dimension.
         
         Args:
@@ -376,7 +381,7 @@ class kychunker(timechunker):
         for t in range(imported_hdf5_array.shape[2]):
             trench_edges_y = drift_corrected_edges[t]            
             row_list = []
-
+            lane_y_coords = []
             for r,orientation in enumerate(trench_orientations):
                 if orientation == 0:
                     trench_edge_y = trench_edges_y[2*r]
@@ -384,14 +389,17 @@ class kychunker(timechunker):
                     lower = min(trench_edge_y+trench_len_y,imported_hdf5_array.shape[0])
                     pad = upper+trench_len_y+padding_y-lower
                     output_array = np.pad(imported_hdf5_array[upper:lower,:,t],((pad, 0),(0,0)),'constant')
-                    
+                    lane_y_coords.append(upper)
                 else:
                     trench_edge_y = trench_edges_y[(2*r)+1]
                     upper = max(trench_edge_y-trench_len_y,0)
                     lower = min(trench_edge_y+padding_y,imported_hdf5_array.shape[0])
                     pad = upper+trench_len_y+padding_y-lower
                     output_array = np.pad(imported_hdf5_array[upper:lower,:,t],((0, pad),(0,0)),'constant')
+                    lane_y_coords.append(upper)
                 row_list.append(output_array)
+            if write_coords:
+                self.y_coords.append(lane_y_coords)
             time_list.append(row_list)
         cropped_in_y = np.array(time_list)
         if len(cropped_in_y.shape) != 4:
@@ -425,14 +433,18 @@ class kychunker(timechunker):
         else:
             print("Orientation detection value invalid!")
 
-        self.delete_hdf5(y_percentiles_smoothed_handle)        
+        self.delete_hdf5(y_percentiles_smoothed_handle)
+        
         cropped_in_y_handles = []
-        for channel in self.all_channels:
+        self.y_coords = []
+        cropped_in_y_handle = self.chunk_t((imported_hdf5_handle[self.seg_channel],y_drift),(2,0),3,self.crop_y,"cropped_in_y_"+str(self.seg_channel),"data",\
+                                               valid_edges_y_list[0],self.padding_y,self.trench_len_y,trench_orientations,t_range_tuple=(self.t_range,(0,-1)),write_coords=True)
+        cropped_in_y_handles.append(cropped_in_y_handle)
+        self.y_coords = np.array(self.y_coords).T
+        
+        for channel in self.all_channels[1:]:
             cropped_in_y_handle = self.chunk_t((imported_hdf5_handle[channel],y_drift),(2,0),3,self.crop_y,"cropped_in_y_"+str(channel),"data",\
-                                               valid_edges_y_list[0],self.padding_y,self.trench_len_y,trench_orientations,t_range_tuple=(self.t_range,(0,-1))) ## problem here
-#             crop_y(self,array_tuple,init_trench_edges,padding_y,trench_len_y,trench_orientations)
-#             cropped_in_y_handle = self.chunk_t((imported_hdf5_handle[self.seg_channel],trench_edges_y_list),(2,1,0),3,self.crop_y,"cropped_in_y_"+str(channel),"data",\
-#                                                self.padding_y,self.trench_len_y,self.top_orientation,row_max,t_range_tuple=(self.t_range,(0,-1))) ## problem here
+                                               valid_edges_y_list[0],self.padding_y,self.trench_len_y,trench_orientations,t_range_tuple=(self.t_range,(0,-1)))
             cropped_in_y_handles.append(cropped_in_y_handle)
         return cropped_in_y_handles
     
@@ -619,7 +631,7 @@ class kychunker(timechunker):
         k_tot = in_bounds.shape[2]
         counting_arr = self.init_counting_arr(cropped_in_y.shape[2])
         k_mask_handle = self.chunk_t((in_bounds,),(1,),1,self.get_k_mask,"k_mask","data",cropped_in_y,counting_arr,dtype=bool)
-        
+        self.x_coords.append(in_bounds[0].T)
         return k_mask_handle,k_tot
 
     def apply_kymo_mask(self,array_tuple,row_num,k_tot):
@@ -680,6 +692,7 @@ class kychunker(timechunker):
             drift in the x dimension.
             trench_width_x (int): Width to be used when cropping in the x-dimension.
         """
+        self.x_coords = []
         for row_num,all_midpoints in enumerate(all_midpoints_list):
             x_drift = x_drift_list[row_num]
             k_mask_handle,k_tot = self.get_k_masks(cropped_in_y_handles[0]["data"],all_midpoints,x_drift,trench_width_x)
@@ -698,14 +711,43 @@ class kychunker(timechunker):
         smoothed_x_percentiles_handle = self.chunk_t((cropped_in_y_handles[0]["data"],),(3,),2,self.get_smoothed_x_percentiles,"smoothed_x_percentiles","data",\
                                                      self.x_percentile,self.background_kernel_x,self.smoothing_kernel_x)
         all_midpoints_list = self.get_all_midpoints(smoothed_x_percentiles_handle["data"],self.otsu_nbins,self.otsu_scaling)
-                
-        with open(self.midpoints_file_path, 'wb') as outfile:
-            pickle.dump(all_midpoints_list, outfile)
         
         x_drift_list = self.get_x_drift(all_midpoints_list)
         
         self.get_crop_in_x(cropped_in_y_handles,all_midpoints_list,x_drift_list,self.trench_width_x)
         
+    def save_coords(self):
+        meta_handle = pandas_hdf5_handler(self.metapath)
+        global_meta = meta_handle.read_df("global",read_metadata=True)
+        pixel_microns = global_meta.metadata['pixel_microns']
+        
+        global_fov = global_meta[global_meta["fov"]==self.fov_number]
+        global_x = global_fov["x"].values
+        global_y = global_fov["y"].values
+        ts = global_fov["t"].values
+        
+        scaled_y_coords = self.y_coords*pixel_microns
+        
+        t_len = scaled_y_coords.shape[1]
+        fs = np.repeat([self.fov_number],t_len)
+        pd_output = []
+        
+        for l,x_coord in enumerate(self.x_coords):
+            scaled_x_coord = x_coord*pixel_microns
+            yt = scaled_y_coords[l]
+            global_yt = yt+global_y
+            ls = np.repeat([l],t_len)
+            for k in range(scaled_x_coord.shape[0]):
+                xt = scaled_x_coord[k]
+                global_xt = xt+global_x
+                ks = np.repeat([k],t_len)
+                pd_output.append(np.array([fs,ls,ks,ts,yt,xt,global_yt,global_xt]).T)
+        pd_output = np.concatenate(pd_output,axis=0)
+        df = pd.DataFrame(pd_output,columns=["fov","lane","trench","time (s)","y (local)","x (local)","y (global)","x (global)"])
+        df = df.astype({"fov":int,"lane":int,"trench":int,"y (local)":int,"x (local)":int})
+        meta_out_handle = pandas_hdf5_handler(self.metapath_fov)
+        meta_out_handle.write_df("data",df)
+
     def reinit_fov_number(self,fov_number):
         """Reinitializes the kymograph generator on a new field of view.
         
@@ -714,7 +756,7 @@ class kychunker(timechunker):
         """
         super(kychunker, self).__init__(self.input_file_prefix,self.output_path,fov_number,self.all_channels,t_chunk=self.t_chunk)
         self.output_file_path = self.output_path+"/kymo_"+str(self.fov_number)+".hdf5"
-        self.midpoints_file_path = self.output_path+"/midpoints_"+str(self.fov_number)+".pkl"
+        self.metapath_fov = self.output_path + "/meta_" + str(self.fov_number) + ".hdf5"
         
     def generate_kymograph(self,fov_number):
         """Master function for generating kymographs for the set of fovs specified on initialization. Writes an hdf5
@@ -729,14 +771,46 @@ class kychunker(timechunker):
         cropped_in_y_handles = self.crop_trenches_in_y(imported_hdf5_handle)
         self.crop_trenches_in_x(cropped_in_y_handles)        
         temp_output_file_path = self.temp_path + "output.hdf5"
-        os.rename(temp_output_file_path, self.output_file_path)
+        shutil.move(temp_output_file_path,self.output_file_path)
+        self.save_coords()
         for cropped_in_y_handle in cropped_in_y_handles:
             self.delete_hdf5(cropped_in_y_handle)
         shutil.rmtree(self.temp_path)
-
-
-
-
+        
+    def collect_metadata(self,fov_list,use_archive=True,overwrite_archive=False):
+        archive_folder = self.output_path+"/archive"
+        self.writedir(archive_folder,overwrite=overwrite_archive)
+        df_out = []
+        
+        for f in fov_list:
+            meta_path = self.output_path + "/meta_" + str(f) + ".hdf5"
+            meta_file = "meta_" + str(f) + ".hdf5"
+            archive_path = archive_folder+"/meta_"+str(f)+".hdf5"
+            if use_archive and meta_file in os.listdir(archive_folder):
+                meta_handle = pandas_hdf5_handler(archive_path)
+                df_out.append(meta_handle.read_df("data"))
+            elif meta_file in os.listdir(self.output_path):
+                meta_handle = pandas_hdf5_handler(meta_path)
+                df_out.append(meta_handle.read_df("data"))
+                shutil.move(meta_path,archive_path)
+                
+        df_out = pd.concat(df_out)
+        meta_out_handle = pandas_hdf5_handler(self.metapath)
+        meta_out_handle.write_df("kymo",df_out)
+        
+        fovs_proc = df_out["fov"].nunique()
+        lanes_proc = len(df_out.groupby(["fov","lane"]).size())
+        trenches_proc = len(df_out.groupby(["fov","lane","trench"]).size())
+        
+        print("fovs processed: " + str(fovs_proc) + "/" + str(len(fov_list)))
+        print("lanes processed: " + str(lanes_proc))
+        print("trenches processed: " + str(trenches_proc))
+        print("lanes/fov: " + str(lanes_proc/fovs_proc))
+        print("trenches/fov: " + str(trenches_proc/fovs_proc))
+        
+        failed_fovs = list(set(fov_list)-set(df_out["fov"].unique().tolist()))
+        print("failed fovs: " + str(failed_fovs))
+        
 
 class kymograph_multifov(multifov):
     def __init__(self,input_file_prefix,all_channels,fov_list,trench_len_y=270,padding_y=20,trench_width_x=30,\
@@ -864,7 +938,7 @@ class kymograph_multifov(multifov):
         
         Args:
             i (int): Specifies the current fov index.
-            imported_array_list (list): A list containing numpy arrays containing the hdf5 file image
+            imported_array_list (list): A 3list containing numpy arrays containing the hdf5 file image
             data of shape (channel,y,x,t).
             y_percentile (int): Percentile to apply along the x-axis.
             smoothing_kernel_y (tuple): Kernel to use for median filtering.
@@ -1173,7 +1247,9 @@ class kymograph_multifov(multifov):
         
         trench_edges_y_lists = self.map_to_fovs(self.get_trench_edges_y,y_percentiles_smoothed_list,self.triangle_nbins,\
                                                self.triangle_scaling,self.y_min_edge_dist)
+        
         y_midpoints_list = self.map_to_fovs(self.get_y_midpoints,trench_edges_y_lists)
+        
         y_drift_list = self.map_to_fovs(self.get_y_drift,y_midpoints_list)
         valid_edges_y_lists = self.map_to_fovs(self.keep_in_frame_kernels,trench_edges_y_lists,\
             y_drift_list,imported_array_list,self.padding_y)

@@ -50,3 +50,7 @@ class dask_controller: #adapted from Charles' code
         def mapallfovs(fov_number,function=function):
             function(fov_number)
         self.futures = self.daskclient.map(mapallfovs,fov_list)
+
+    def retry_failed(self):
+        failed_list = [future for future in self.futures if future.status != 'finished']
+        self.daskclient.retry(failed_list)
