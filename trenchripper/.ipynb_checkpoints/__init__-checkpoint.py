@@ -3,3 +3,4 @@ from .interactive import *
 from .tplot import *
 from .cluster import *
 from .ndextract import *
+from .segment import *

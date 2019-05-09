@@ -2,6 +2,7 @@ import h5py
 import os
 import shutil
 import copy
+import h5py_cache
 import pickle as pkl
 import numpy as np
 import pandas as pd
@@ -11,11 +12,14 @@ from tifffile import imsave
 from .utils import pandas_hdf5_handler
 
 class hdf5_fov_extractor:
-    def __init__(self,nd2filename,headpath,chunk_shape=(256,256,1)): #note this chunk size has a large role in downstream steps...make sure is less than 1 MB
+    def __init__(self,nd2filename,headpath,chunk_shape=(2048,2048,1)): #note this chunk size has a large role in downstream steps...make sure is less than 1 MB
         self.nd2filename = nd2filename
         self.headpath = headpath
         self.hdf5path = headpath + "/hdf5"
         self.chunk_shape = chunk_shape
+        chunk_bytes = (2*np.multiply.accumulate(np.array(chunk_shape))[-1])
+        self.chunk_cache_mem_size = 2*chunk_bytes
+        
         self.writedir(self.hdf5path)
         
         meta_handle = nd_metadata_handler(self.nd2filename)
@@ -38,7 +42,7 @@ class hdf5_fov_extractor:
         nd2file = ND2Reader(self.nd2filename)
         num_fovs = len(nd2file.metadata["fields_of_view"])
         
-        with h5py.File(self.hdf5path + "/fov_" + str(fovnum) + ".hdf5", "w") as h5pyfile:
+        with h5py_cache.File(self.hdf5path + "/fov_" + str(fovnum) + ".hdf5","w",chunk_cache_mem_size=self.chunk_cache_mem_size) as h5pyfile:
             for i,channel in enumerate(nd2file.metadata["channels"]):
                 y_dim = nd2file.metadata['height']
                 x_dim = nd2file.metadata['width']

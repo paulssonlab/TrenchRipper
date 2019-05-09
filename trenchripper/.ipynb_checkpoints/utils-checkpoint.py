@@ -3,12 +3,13 @@ import h5py
 import shutil
 import os
 import ast
+import h5py_cache
 
 import pandas as pd
 from copy import deepcopy
 
 class timechunker():
-    def __init__(self,input_file_prefix,output_path,fov_number,all_channels,t_chunk=1,img_chunk_size=128):
+    def __init__(self,input_file_prefix,output_path,fov_number,all_channels,t_chunk=1,img_chunk_size=2048):
         """Write later...
             
         Args:
@@ -34,6 +35,8 @@ class timechunker():
         self.seg_channel = self.all_channels[0]
         
         self.img_chunk_size = img_chunk_size
+        chunk_bytes = (2*(img_chunk_size**2))
+        self.chunk_cache_mem_size = 2*chunk_bytes
         self.t_chunk = t_chunk
 
     def writedir(self,directory,overwrite=False):
@@ -105,22 +108,26 @@ class timechunker():
             t_dim_out (int): Axis of the target time dimension.
             dataset_name (str): The name of the hdf5 dataset to write to.
         """
-        with h5py.File(self.temp_path + file_name + ".hdf5", "r+") as h5pyfile:
-            indices = list(range(ti,min(ti+self.t_chunk,t_len))) ## this is clearly wrong
+        with h5py_cache.File(self.temp_path + file_name + ".hdf5","r+",chunk_cache_mem_size=self.chunk_cache_mem_size) as h5pyfile:      
+            indices = list(range(ti,min(ti+self.t_chunk,t_len)))
             self.reassign_idx(h5pyfile[dataset_name],array,indices,t_dim_out)
 
-    def delete_hdf5(self,file_handle):
-        """Deletes an hdf5 file, given its file handle, and closes the handle
-        itself.
+#     def delete_hdf5(self,file_handle):
+#         """Deletes an hdf5 file, given its file handle, and closes the handle
+#         itself.
         
-        Args:
-            file_handle (hdf5file): Hdf5 file handle.
-        """
-        filepath = file_handle.filename
-        file_handle.close()
-        self.removefile(filepath)
-        
-    def init_hdf5(self,file_name,dataset_name,array,t_len,t_dim_out,dtype='uint16'):
+#         Args:
+#             file_handle (hdf5file): Hdf5 file handle.
+#         """
+#         filepath = file_handle.filename
+#         file_handle.close()
+#         self.removefile(filepath)
+    
+#     def delete_all_handles(self):
+#         for handle in self.handles:
+#             self.delete_hdf5(handle)
+            
+    def init_hdf5(self,file_name,dataset_name,array,t_len,t_dim_out,dtype='uint16',singleton_chunk_dims=[]):
         """Initializes an empty hdf5 file and dataset to write to, given an array
         with the target shape in all axes but the time axis. The time axis
         is then specified by t_len.
@@ -140,17 +147,23 @@ class timechunker():
         out_shape = list(array.shape)   
         out_shape[t_dim_out] = t_len
         out_shape = tuple(out_shape)
-        
+
         chunk_shape = np.array(list(out_shape))
+            
         min_arr = np.ones(chunk_shape.shape,dtype=int)*self.img_chunk_size
         chunk_shape = np.minimum(chunk_shape,min_arr)
         chunk_shape[t_dim_out] = 1
+        
+        if singleton_chunk_dims != []:
+            for dim in singleton_chunk_dims:
+                chunk_shape[dim] = 1
+        
         chunk_shape = tuple(chunk_shape)
         
-        with h5py.File(self.temp_path + file_name + ".hdf5", "a") as h5pyfile:
+        with h5py_cache.File(self.temp_path + file_name + ".hdf5","a",chunk_cache_mem_size=self.chunk_cache_mem_size) as h5pyfile:
             hdf5_dataset = h5pyfile.create_dataset(dataset_name , out_shape, chunks=chunk_shape, dtype=dtype)
             
-    def chunk_t(self,hdf5_array_tuple,t_dim_in_tuple,t_dim_out,function,file_name,dataset_name,*args,dtype='uint16',t_range_tuple=None,**kwargs):
+    def chunk_t(self,hdf5_array_tuple,t_dim_in_tuple,t_dim_out,function,file_name,dataset_name,*args,dtype='uint16',singleton_chunk_dims=[],t_range_tuple=None,**kwargs):
         """Applies a given function to any number of input hdf5 arrays, chunking this processing in the
         time dimension, and outputs another hdf5 file.
         
@@ -191,11 +204,12 @@ class timechunker():
             f_chunk = function(chunk_tuple,*args,**kwargs)
             del chunk_tuple
             if ti == 0:
-                self.init_hdf5(file_name,dataset_name,f_chunk,t_len,t_dim_out,dtype=dtype)
+                self.init_hdf5(file_name,dataset_name,f_chunk,t_len,t_dim_out,dtype=dtype,singleton_chunk_dims=singleton_chunk_dims)
             self.write_hdf5(file_name,f_chunk,ti,t_len,t_dim_out,dataset_name)
             del f_chunk
-        out_hdf5_handle = h5py.File(self.temp_path + file_name + ".hdf5", "r")
-        return out_hdf5_handle
+            
+        out_hdf5_path = self.temp_path + file_name + ".hdf5"
+        return out_hdf5_path
 
 class multifov():
     def __init__(self,input_file_prefix,all_channels,fov_list):
@@ -248,7 +262,9 @@ class kymo_handle():
             self.kymo_arr = self._scale_kymo(self.kymo_arr,scale_perc)
     def import_unwrap(self,unwrap_arr,t_tot,padding=0,scale=False,scale_perc=80):
         self.kymo_arr = unwrap_arr.reshape(unwrap_arr.shape[0], t_tot, -1)
-        self.kymo_arr = np.swapaxes(self.kymo_arr,1,2)[:,padding:-padding]
+        self.kymo_arr = np.swapaxes(self.kymo_arr,1,2) #yxt
+        if padding > 0:
+            self.kymo_arr = self.kymo_arr[:,padding:-padding]
         if scale:
             self.kymo_arr = self._scale_kymo(self.kymo_arr,scale_perc)
     def return_unwrap(self,padding=0):

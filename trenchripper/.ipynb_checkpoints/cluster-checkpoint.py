@@ -2,6 +2,7 @@ import trenchripper as tr
 import os
 import shutil
 import dask
+import time
 
 from dask.distributed import Client,progress
 from dask_jobqueue import SLURMCluster
@@ -46,11 +47,17 @@ class dask_controller: #adapted from Charles' code
         complete = len([item for item in self.futures if item.status=="finished"])
         print(str(complete) + "/" + str(len(self.futures)))
         
-    def mapfovs(self,function,fov_list):
+    def mapfovs(self,function,fov_list,retries=0):
+        self.function = function
+        self.retries = retries
         def mapallfovs(fov_number,function=function):
             function(fov_number)
-        self.futures = self.daskclient.map(mapallfovs,fov_list)
-
+        self.futures = {}
+        for fov in fov_list:
+            future = self.daskclient.submit(mapallfovs,fov,retries=retries)
+            self.futures[fov] = future
     def retry_failed(self):
-        failed_list = [future for future in self.futures if future.status != 'finished']
-        self.daskclient.retry(failed_list)
+        self.failed_fovs = [fov for fov,future in self.futures.items() if future.status != 'finished']
+        self.daskclient.restart()
+        time.sleep(8)
+        self.mapfovs(self.function,self.failed_fovs,retries=self.retries)

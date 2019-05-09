@@ -11,7 +11,7 @@ from .kymograph import kymograph_multifov
 class kymograph_interactive(kymograph_multifov):
     def __init__(self,input_file_prefix,all_channels,fov_list,trench_len_y=270,padding_y=20,trench_width_x=30,\
                  t_subsample_step=1,t_range=(0,-1),y_percentile=85,y_min_edge_dist=50,smoothing_kernel_y=(9,1),\
-                 triangle_nbins=50,triangle_scaling=1.,orientation_detection=0,\
+                 triangle_nbins=50,triangle_scaling=1.,orientation_detection=0,expected_num_rows=None,\
                  x_percentile=85,background_kernel_x=(301,1),smoothing_kernel_x=(9,1),\
                  otsu_nbins=50,otsu_scaling=1.):
         """The kymograph class is used to generate and visualize kymographs. The central function of this
@@ -54,8 +54,9 @@ class kymograph_interactive(kymograph_multifov):
         super(kymograph_interactive, self).__init__(input_file_prefix,all_channels,fov_list,trench_len_y=trench_len_y,\
             padding_y=padding_y,trench_width_x=trench_width_x,t_subsample_step=t_subsample_step,t_range=t_range,y_percentile=y_percentile,\
             y_min_edge_dist=y_min_edge_dist,smoothing_kernel_y=smoothing_kernel_y,triangle_nbins=triangle_nbins,\
-            triangle_scaling=triangle_scaling,orientation_detection=orientation_detection,x_percentile=x_percentile,background_kernel_x=background_kernel_x,\
-            smoothing_kernel_x=smoothing_kernel_x,otsu_nbins=otsu_nbins,otsu_scaling=otsu_scaling)
+            triangle_scaling=triangle_scaling,orientation_detection=orientation_detection,expected_num_rows=expected_num_rows,\
+            x_percentile=x_percentile,background_kernel_x=background_kernel_x,smoothing_kernel_x=smoothing_kernel_x,\
+            otsu_nbins=otsu_nbins,otsu_scaling=otsu_scaling)
         
     def get_image_params(self,fov_idx):
         hdf5_handle = h5py.File(self.input_file_prefix + str(fov_idx) + ".hdf5", "a")
@@ -127,22 +128,25 @@ class kymograph_interactive(kymograph_multifov):
         
         
     def preview_y_crop(self,y_percentiles_smoothed_list, imported_array_list, triangle_nbins, triangle_scaling,\
-                       y_min_edge_dist, padding_y, trench_len_y,vertical_spacing,orientation_detection):
+                       y_min_edge_dist, padding_y, trench_len_y,vertical_spacing,expected_num_rows,orientation_detection):
         
                 
         trench_edges_y_lists = self.map_to_fovs(self.get_trench_edges_y,y_percentiles_smoothed_list,triangle_nbins,\
                                                triangle_scaling,y_min_edge_dist)
         y_midpoints_list = self.map_to_fovs(self.get_y_midpoints,trench_edges_y_lists)
         y_drift_list = self.map_to_fovs(self.get_y_drift,y_midpoints_list)
-        valid_edges_y_lists = self.map_to_fovs(self.keep_in_frame_kernels,trench_edges_y_lists,\
-            y_drift_list,imported_array_list,padding_y)
-        
+                
         if orientation_detection == 'phase':
-            trench_orientations_list = self.map_to_fovs(self.get_phase_orientations,y_percentiles_smoothed_list,\
-                valid_edges_y_lists)
+            valid_edges_y_output = self.map_to_fovs(self.keep_in_frame_kernels,trench_edges_y_lists,y_drift_list,imported_array_list,padding_y)
+            valid_edges_y_lists = [item[0] for item in valid_edges_y_output]
+            trench_orientations_list = self.map_to_fovs(self.get_phase_orientations,y_percentiles_smoothed_list,valid_edges_y_lists)
         
         elif orientation_detection == 0 or orientation_detection == 1:
-            trench_orientations_list = self.map_to_fovs(self.get_manual_orientations,valid_edges_y_lists,orientation_detection)
+            trench_orientations_list = self.map_to_fovs(self.get_manual_orientations,trench_edges_y_lists,expected_num_rows,orientation_detection)
+            valid_edges_y_output = self.map_to_fovs(self.keep_in_frame_kernels,trench_edges_y_lists,y_drift_list,imported_array_list,padding_y)
+            valid_edges_y_lists = [item[0] for item in valid_edges_y_output]
+            valid_orientation_lists = [item[1] for item in valid_edges_y_output]
+            trench_orientations_list = [np.array(item)[valid_orientation_lists[i]].tolist() for i,item in enumerate(trench_orientations_list)]
 
         else:
             print("Orientation detection value invalid!")

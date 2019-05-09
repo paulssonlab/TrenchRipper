@@ -7,6 +7,7 @@ import skimage as sk
 import os
 import pickle
 import sys
+import h5py_cache
 
 from skimage import filters
 from .utils import timechunker,multifov,pandas_hdf5_handler
@@ -14,7 +15,7 @@ from .utils import timechunker,multifov,pandas_hdf5_handler
 class kychunker(timechunker):
     def __init__(self,headpath="",fov_number=0,all_channels=[""],trench_len_y=270,padding_y=20,trench_width_x=30,\
                  t_chunk=1,t_range=(0,-1),y_percentile=85,y_min_edge_dist=50,smoothing_kernel_y=(9,1),triangle_nbins=50,triangle_scaling=1.,\
-                 orientation_detection=0,x_percentile=85,background_kernel_x=(301,1),smoothing_kernel_x=(9,1),otsu_nbins=50,otsu_scaling=1.):
+                 orientation_detection=0,expected_num_rows=None,x_percentile=85,background_kernel_x=(301,1),smoothing_kernel_x=(9,1),otsu_nbins=50,otsu_scaling=1.):
         """The kymograph class is used to generate kymographs using chunked computation on hdf5 arrays. The central function of this
         class is the method 'generate_kymograph', which takes an hdf5 file of images from a single fov and
         outputs an hdf5 file containing kymographs from all detected trenches. It is recommened that the user
@@ -51,6 +52,8 @@ class kychunker(timechunker):
             orientation_detection (int or str, optional): If str is 'phase', then will attempt to use phase features to autodetect orientation.
             If an int is given, orientation of the top-most row will be specified manually where 0 corresponds to a trench with
             a downward-oriented trench opening and 1 corresponds to a trench with an upward-oriented trench opening.
+            expected_num_rows (int, optional): Required if manually specifying trench orientation, specifies the number of rows expected to be
+            in the fov.
 
             x_percentile (int, optional): Used for reducing signal in xyt to only the xt dimension when cropping
             in the x-dimension.
@@ -89,7 +92,7 @@ class kychunker(timechunker):
         self.triangle_scaling = triangle_scaling
         ### 
         self.orientation_detection = orientation_detection
-        
+        self.expected_num_rows = expected_num_rows
 
         #### params for x
         ## parameter for reducing signal to one dim
@@ -151,10 +154,12 @@ class kychunker(timechunker):
             h5py.File: Hdf5 file handle corresponding to the output hdf5 dataset "data", a smoothed
             percentile array of shape (y,t).
         """
-        y_percentiles_handle = self.chunk_t((imported_hdf5_handle[self.seg_channel],),(2,),1,self.get_y_percentile,"y_percentile","data",y_percentile,t_range_tuple=(self.t_range,))
-        y_percentiles_smoothed_handle = self.chunk_t((y_percentiles_handle["data"],),(1,),1,self.median_filter_2d,"y_percentile_smoothed","data",smoothing_kernel_y)
-        self.delete_hdf5(y_percentiles_handle)
-        return y_percentiles_smoothed_handle
+        y_percentiles_path = self.chunk_t((imported_hdf5_handle[self.seg_channel],),(2,),1,self.get_y_percentile,"y_percentile","data",y_percentile,t_range_tuple=(self.t_range,))
+        
+        with h5py_cache.File(y_percentiles_path,"r",chunk_cache_mem_size=self.chunk_cache_mem_size) as y_percentiles_handle:
+            y_percentiles_smoothed_path = self.chunk_t((y_percentiles_handle["data"],),(1,),1,self.median_filter_2d,"y_percentile_smoothed","data",smoothing_kernel_y)
+        self.removefile(y_percentiles_path)
+        return y_percentiles_smoothed_path
 
     def triangle_threshold(self,array_tuple,triangle_nbins,triangle_scaling):
         """Applies a triangle threshold to each timepoint in a (y,t) input array, returning a boolean mask.
@@ -245,21 +250,23 @@ class kychunker(timechunker):
         Returns:
             list: List containing arrays of edges for each timepoint, filtered for rows that are too small.
         """
-        # triangle_threshold = sk.filters.threshold_triangle(y_percentiles_smoothed_array[:],nbins=triangle_nbins)*triangle_scaling
-        # triangle_threshold(self,array_tuple,triangle_nbins,triangle_scaling)
-
-        trench_mask_y_handle = self.chunk_t((y_percentiles_smoothed_array,),(1,),1,self.triangle_threshold,"trench_mask_y","data",\
+        
+        trench_mask_y_path = self.chunk_t((y_percentiles_smoothed_array,),(1,),1,self.triangle_threshold,"trench_mask_y","data",\
         triangle_nbins,triangle_scaling)
-        trench_edges_y_list = self.get_edges_from_mask(trench_mask_y_handle["data"],y_min_edge_dist)
-        self.delete_hdf5(trench_mask_y_handle)
+        with h5py_cache.File(trench_mask_y_path,"r",chunk_cache_mem_size=self.chunk_cache_mem_size) as trench_mask_y_handle:
+            trench_edges_y_list = self.get_edges_from_mask(trench_mask_y_handle["data"],y_min_edge_dist)
+        self.removefile(trench_mask_y_path)
         return trench_edges_y_list
 
-    def get_manual_orientations(self,valid_edges_y_list,top_orientation):
+    def get_manual_orientations(self,trench_edges_y_list,expected_num_rows,top_orientation):
         orientation = top_orientation
         orientations = []
-        for row in range(valid_edges_y_list[0].shape[0]//2):
-            orientations.append(orientation)
-            orientation = (orientation+1)%2
+        if trench_edges_y_list[0].shape[0]//2 == expected_num_rows:
+            for row in range(trench_edges_y_list[0].shape[0]//2):
+                orientations.append(orientation)
+                orientation = (orientation+1)%2
+        else:
+            print("Start frame does not have expected number of rows!")
         return orientations
     
     def get_phase_orientations(self,y_percentiles_smoothed_handle,valid_edges_y_list,pad=50,percentile=90):
@@ -330,8 +337,6 @@ class kychunker(timechunker):
             y_drift.append(median_translation)
         net_y_drift = np.append(np.array([0]),np.add.accumulate(y_drift)).astype(int)
         return net_y_drift
-        
-        
 
     def keep_in_frame_kernels(self,trench_edges_y_list,y_drift,max_y_dim,padding_y):
         """Removes those kernels which drift out of the image during any timepoint.
@@ -352,14 +357,17 @@ class kychunker(timechunker):
         edge_in_bounds = edge_under_max*edge_over_min
 
         valid_edge_mask = []
+        valid_orientation_mask = []
         for i in range(0,len(edge_in_bounds),2):
             if np.all(edge_in_bounds[i:i+2]):
                 valid_edge_mask+=[True,True]
+                valid_orientation_mask+=[True]
             else:
                 valid_edge_mask+=[False,False]
+                valid_orientation_mask+=[False]
 
         valid_edges_y_list = [trench_edges_y[valid_edge_mask] for trench_edges_y in trench_edges_y_list]
-        return valid_edges_y_list
+        return valid_edges_y_list,valid_orientation_mask
 
     def crop_y(self,array_tuple,init_trench_edges,padding_y,trench_len_y,trench_orientations,write_coords=False):
         """Performs cropping of the images in the y-dimension.
@@ -409,7 +417,7 @@ class kychunker(timechunker):
             cropped_in_y = np.moveaxis(cropped_in_y,(0,1,2,3),(3,0,1,2))
             return cropped_in_y
         
-    def crop_trenches_in_y(self,imported_hdf5_handle):
+    def crop_trenches_in_y(self):
         """Master function for cropping the input hdf5 file in the y-dimension.
         
         Args:
@@ -419,34 +427,44 @@ class kychunker(timechunker):
         Returns:
             h5py.File: Hdf5 file handle corresponding to the y-cropped hdf5 dataset
             "data" of shape (rows,channels,y,x,t). OUTDATED
-        """      
-        y_percentiles_smoothed_handle = self.get_smoothed_y_percentiles(imported_hdf5_handle,self.y_percentile,self.smoothing_kernel_y) 
-        trench_edges_y_list = self.get_trench_edges_y(y_percentiles_smoothed_handle["data"],self.triangle_nbins,self.triangle_scaling,self.y_min_edge_dist)
-        y_midpoints = self.get_y_midpoints(trench_edges_y_list)
-        y_drift = self.get_y_drift(y_midpoints)
-        valid_edges_y_list = self.keep_in_frame_kernels(trench_edges_y_list,y_drift,imported_hdf5_handle[self.seg_channel].shape[0],self.padding_y)
-        
-        if self.orientation_detection == 'phase':
-            trench_orientations = self.get_phase_orientations(y_percentiles_smoothed_handle,valid_edges_y_list)
-        elif self.orientation_detection == 0 or self.orientation_detection == 1:
-            trench_orientations = self.get_manual_orientations(valid_edges_y_list,self.orientation_detection)
-        else:
-            print("Orientation detection value invalid!")
+        """
+        with h5py_cache.File(self.input_path,"r",chunk_cache_mem_size=self.chunk_cache_mem_size) as imported_hdf5_handle:
+            y_percentiles_smoothed_path = self.get_smoothed_y_percentiles(imported_hdf5_handle,self.y_percentile,self.smoothing_kernel_y)
+        with h5py_cache.File(y_percentiles_smoothed_path,"r",chunk_cache_mem_size=self.chunk_cache_mem_size) as y_percentiles_smoothed_handle:
+            trench_edges_y_list = self.get_trench_edges_y(y_percentiles_smoothed_handle["data"],self.triangle_nbins,self.triangle_scaling,self.y_min_edge_dist)
+            y_midpoints = self.get_y_midpoints(trench_edges_y_list)
+            y_drift = self.get_y_drift(y_midpoints)
+                
+            if self.orientation_detection == 'phase':
+                with h5py_cache.File(self.input_path,"r",chunk_cache_mem_size=self.chunk_cache_mem_size) as imported_hdf5_handle:
+                    valid_edges_y_list,_ = self.keep_in_frame_kernels(trench_edges_y_list,y_drift,imported_hdf5_handle[self.seg_channel].shape[0],self.padding_y)
+                self.trench_orientations = self.get_phase_orientations(y_percentiles_smoothed_handle,valid_edges_y_list)
 
-        self.delete_hdf5(y_percentiles_smoothed_handle)
+            elif self.orientation_detection == 0 or self.orientation_detection == 1:
+                self.trench_orientations = self.get_manual_orientations(trench_edges_y_list,self.expected_num_rows,self.orientation_detection)
+                with h5py_cache.File(self.input_path,"r",chunk_cache_mem_size=self.chunk_cache_mem_size) as imported_hdf5_handle:
+                    valid_edges_y_list,valid_orientation_mask = self.keep_in_frame_kernels(trench_edges_y_list,y_drift,imported_hdf5_handle[self.seg_channel].shape[0],self.padding_y)
+                self.trench_orientations = np.array(self.trench_orientations)[valid_orientation_mask].tolist()
+
+            else:
+                print("Orientation detection value invalid!")
+            
+        self.removefile(y_percentiles_smoothed_path)
         
-        cropped_in_y_handles = []
+        cropped_in_y_paths = []
         self.y_coords = []
-        cropped_in_y_handle = self.chunk_t((imported_hdf5_handle[self.seg_channel],y_drift),(2,0),3,self.crop_y,"cropped_in_y_"+str(self.seg_channel),"data",\
-                                               valid_edges_y_list[0],self.padding_y,self.trench_len_y,trench_orientations,t_range_tuple=(self.t_range,(0,-1)),write_coords=True)
-        cropped_in_y_handles.append(cropped_in_y_handle)
+        with h5py_cache.File(self.input_path,"r",chunk_cache_mem_size=self.chunk_cache_mem_size) as imported_hdf5_handle:
+            cropped_in_y_path = self.chunk_t((imported_hdf5_handle[self.seg_channel],y_drift),(2,0),3,self.crop_y,"cropped_in_y_"+str(self.seg_channel),"data",\
+                                                   valid_edges_y_list[0],self.padding_y,self.trench_len_y,self.trench_orientations,t_range_tuple=(self.t_range,(0,-1)),write_coords=True)
+        cropped_in_y_paths.append(cropped_in_y_path)
         self.y_coords = np.array(self.y_coords).T
         
         for channel in self.all_channels[1:]:
-            cropped_in_y_handle = self.chunk_t((imported_hdf5_handle[channel],y_drift),(2,0),3,self.crop_y,"cropped_in_y_"+str(channel),"data",\
-                                               valid_edges_y_list[0],self.padding_y,self.trench_len_y,trench_orientations,t_range_tuple=(self.t_range,(0,-1)))
-            cropped_in_y_handles.append(cropped_in_y_handle)
-        return cropped_in_y_handles
+            with h5py_cache.File(self.input_path,"r",chunk_cache_mem_size=self.chunk_cache_mem_size) as imported_hdf5_handle:
+                cropped_in_y_path = self.chunk_t((imported_hdf5_handle[channel],y_drift),(2,0),3,self.crop_y,"cropped_in_y_"+str(channel),"data",\
+                                                   valid_edges_y_list[0],self.padding_y,self.trench_len_y,self.trench_orientations,t_range_tuple=(self.t_range,(0,-1)))
+            cropped_in_y_paths.append(cropped_in_y_path)
+        return cropped_in_y_paths
     
     def get_smoothed_x_percentiles(self,array_tuple,x_percentile,background_kernel_x,smoothing_kernel_x):
         """Summary
@@ -630,34 +648,34 @@ class kychunker(timechunker):
                             midpoints_dn[:,valid_mask]])
         k_tot = in_bounds.shape[2]
         counting_arr = self.init_counting_arr(cropped_in_y.shape[2])
-        k_mask_handle = self.chunk_t((in_bounds,),(1,),1,self.get_k_mask,"k_mask","data",cropped_in_y,counting_arr,dtype=bool)
+        k_mask_path = self.chunk_t((in_bounds,),(1,),1,self.get_k_mask,"k_mask","data",cropped_in_y,counting_arr,dtype=bool)
         self.x_coords.append(in_bounds[0].T)
-        return k_mask_handle,k_tot
+        return k_mask_path,k_tot
 
     def apply_kymo_mask(self,array_tuple,row_num,k_tot):
-            """Given a y-cropped image and a boolean trench mask of shape (y_dim,t_dim,x_dim), masks that image to 
-            generate an output kymograph of shape (trench_num,y_dim,x_dim,t_dim). Masked trenches must be a fized size,
-            so this only detects trenches that are totally in frame for the whole timelapse. 
+        """Given a y-cropped image and a boolean trench mask of shape (y_dim,t_dim,x_dim), masks that image to 
+        generate an output kymograph of shape (trench_num,y_dim,x_dim,t_dim). Masked trenches must be a fized size,
+        so this only detects trenches that are totally in frame for the whole timelapse. 
 
-            Args:
-                array_tuple (tuple): Tuple containing the y-cropped hdf5 array of shape (rows,y,x,t), and
-                the boolean trench mask of shape (y_dim,t_dim,x_dim).
-                row_num (int): Int specifying the current row.
-                k_tot (int): Int specifying the total number of detected trenches in the fov.
+        Args:
+            array_tuple (tuple): Tuple containing the y-cropped hdf5 array of shape (rows,y,x,t), and
+            the boolean trench mask of shape (y_dim,t_dim,x_dim).
+            row_num (int): Int specifying the current row.
+            k_tot (int): Int specifying the total number of detected trenches in the fov.
 
-            Returns:
-                array: Kymograph array of shape (trench_num,y_dim,x_dim,t_dim).
-            """
-            img_arr,k_mask = array_tuple
-            img_arr = img_arr[row_num]
-            img_arr_swap = np.moveaxis(img_arr,(0,1,2),(0,2,1))
-            cropped_img_arr = img_arr_swap[k_mask]
-            cropped_img_arr = cropped_img_arr.reshape(img_arr_swap.shape[0],img_arr_swap.shape[1],-1)
-            cropped_img_arr = np.moveaxis(cropped_img_arr,(0,1,2),(0,2,1))
-            kymo_out = np.stack(np.split(cropped_img_arr,k_tot,axis=1),axis=0)
-            return kymo_out
+        Returns:
+            array: Kymograph array of shape (trench_num,y_dim,x_dim,t_dim).
+        """
+        img_arr,k_mask = array_tuple
+        img_arr = img_arr[row_num]
+        img_arr_swap = np.moveaxis(img_arr,(0,1,2),(0,2,1))
+        cropped_img_arr = img_arr_swap[k_mask]
+        cropped_img_arr = cropped_img_arr.reshape(img_arr_swap.shape[0],img_arr_swap.shape[1],-1)
+        cropped_img_arr = np.moveaxis(cropped_img_arr,(0,1,2),(0,2,1))
+        kymo_out = np.stack(np.split(cropped_img_arr,k_tot,axis=1),axis=0)
+        return kymo_out
 
-    def crop_with_k_masks(self,cropped_in_y_handles,k_mask_handle,row_num,k_tot):
+    def crop_with_k_masks(self,cropped_in_y_paths,k_mask_handle,row_num,k_tot):
         """Generates and writes kymographs of a single row from the already y-cropped image data, using a pregenerated kymograph mask
         of shape (y_dim,t_dim,x_dim).
         
@@ -673,12 +691,11 @@ class kychunker(timechunker):
         for c,channel in enumerate(self.all_channels):
             dataset_name = str(row_num) + "/" + str(channel)
             
-            kymograph_handle = self.chunk_t((cropped_in_y_handles[c]["data"],k_mask_handle["data"]),(3,1),3,\
-                                           self.apply_kymo_mask,"output",dataset_name,row_num,k_tot)
-            kymograph_handle.close()
-        self.delete_hdf5(k_mask_handle)
+            with h5py_cache.File(cropped_in_y_paths[c],"r",chunk_cache_mem_size=self.chunk_cache_mem_size) as cropped_in_y_handle:          
+                kymograph_path = self.chunk_t((cropped_in_y_handle["data"],k_mask_handle["data"]),(3,1),3,\
+                                               self.apply_kymo_mask,"output",dataset_name,row_num,k_tot,singleton_chunk_dims=[0])
         
-    def get_crop_in_x(self,cropped_in_y_handles,all_midpoints_list,x_drift_list,trench_width_x):
+    def get_crop_in_x(self,cropped_in_y_paths,all_midpoints_list,x_drift_list,trench_width_x):
         """Generates complete kymograph arrays for all trenches in the fov in every channel listed in 'self.all_channels'.
         Writes hdf5 files containing datasets of shape (trench_num,y_dim,x_dim,t_dim) for each row,channel combination. 
         Dataset keys follow the convention ["[row_number]/[channel_name]"].
@@ -695,11 +712,17 @@ class kychunker(timechunker):
         self.x_coords = []
         for row_num,all_midpoints in enumerate(all_midpoints_list):
             x_drift = x_drift_list[row_num]
-            k_mask_handle,k_tot = self.get_k_masks(cropped_in_y_handles[0]["data"],all_midpoints,x_drift,trench_width_x)
-            self.crop_with_k_masks(cropped_in_y_handles,k_mask_handle,row_num,k_tot)
+            
+            
+            with h5py_cache.File(cropped_in_y_paths[0],"r",chunk_cache_mem_size=self.chunk_cache_mem_size) as cropped_in_y_handle:
+                k_mask_path,k_tot = self.get_k_masks(cropped_in_y_handle["data"],all_midpoints,x_drift,trench_width_x)
+            with h5py_cache.File(k_mask_path,"r",chunk_cache_mem_size=self.chunk_cache_mem_size) as k_mask_handle:
+                self.crop_with_k_masks(cropped_in_y_paths,k_mask_handle,row_num,k_tot)
+            self.removefile(k_mask_path)
+            
         
     
-    def crop_trenches_in_x(self,cropped_in_y_handles):
+    def crop_trenches_in_x(self,cropped_in_y_paths):
         """Performs cropping of the images in the x-dimension. Writes hdf5 files containing datasets of shape (trench_num,y_dim,x_dim,t_dim)
         for each row,channel combination. Dataset keys follow the convention ["[row_number]/[channel_name]"].
         
@@ -708,13 +731,15 @@ class kychunker(timechunker):
             "data" of shape (rows,channels,x,y,t).
         
         """
-        smoothed_x_percentiles_handle = self.chunk_t((cropped_in_y_handles[0]["data"],),(3,),2,self.get_smoothed_x_percentiles,"smoothed_x_percentiles","data",\
-                                                     self.x_percentile,self.background_kernel_x,self.smoothing_kernel_x)
-        all_midpoints_list = self.get_all_midpoints(smoothed_x_percentiles_handle["data"],self.otsu_nbins,self.otsu_scaling)
+        with h5py_cache.File(cropped_in_y_paths[0],"r",chunk_cache_mem_size=self.chunk_cache_mem_size) as cropped_in_y_handle:
+            smoothed_x_percentiles_path = self.chunk_t((cropped_in_y_handle["data"],),(3,),2,self.get_smoothed_x_percentiles,"smoothed_x_percentiles","data",\
+                                                         self.x_percentile,self.background_kernel_x,self.smoothing_kernel_x)
+        with h5py_cache.File(smoothed_x_percentiles_path,"r",chunk_cache_mem_size=self.chunk_cache_mem_size) as smoothed_x_percentiles_handle:
+            all_midpoints_list = self.get_all_midpoints(smoothed_x_percentiles_handle["data"],self.otsu_nbins,self.otsu_scaling)
         
         x_drift_list = self.get_x_drift(all_midpoints_list)
         
-        self.get_crop_in_x(cropped_in_y_handles,all_midpoints_list,x_drift_list,self.trench_width_x)
+        self.get_crop_in_x(cropped_in_y_paths,all_midpoints_list,x_drift_list,self.trench_width_x)
         
     def save_coords(self):
         meta_handle = pandas_hdf5_handler(self.metapath)
@@ -725,6 +750,8 @@ class kychunker(timechunker):
         global_x = global_fov["x"].values
         global_y = global_fov["y"].values
         ts = global_fov["t"].values
+        tpts = np.array(range(ts.shape[0]))
+        orit_dict = {0:"top",1:"bottom"}
         
         scaled_y_coords = self.y_coords*pixel_microns
         
@@ -735,16 +762,18 @@ class kychunker(timechunker):
         for l,x_coord in enumerate(self.x_coords):
             scaled_x_coord = x_coord*pixel_microns
             yt = scaled_y_coords[l]
+            orit = np.repeat([orit_dict[self.trench_orientations[l]]],t_len)
             global_yt = yt+global_y
             ls = np.repeat([l],t_len)
             for k in range(scaled_x_coord.shape[0]):
                 xt = scaled_x_coord[k]
                 global_xt = xt+global_x
                 ks = np.repeat([k],t_len)
-                pd_output.append(np.array([fs,ls,ks,ts,yt,xt,global_yt,global_xt]).T)
+                pd_output.append(np.array([fs,ls,ks,tpts,ts,orit,yt,xt,global_yt,global_xt]).T)
         pd_output = np.concatenate(pd_output,axis=0)
-        df = pd.DataFrame(pd_output,columns=["fov","lane","trench","time (s)","y (local)","x (local)","y (global)","x (global)"])
-        df = df.astype({"fov":int,"lane":int,"trench":int,"y (local)":int,"x (local)":int})
+        df = pd.DataFrame(pd_output,columns=["fov","lane","trench","timepoints","time (s)","lane orientation","y (local)","x (local)","y (global)","x (global)"])
+        df = df.astype({"fov":int,"lane":int,"trench":int,"timepoints":int,"time (s)":float,"lane orientation":str,"y (local)":float,"x (local)":float,\
+                        "y (global)":float,"x (global)":float})
         meta_out_handle = pandas_hdf5_handler(self.metapath_fov)
         meta_out_handle.write_df("data",df)
 
@@ -767,15 +796,15 @@ class kychunker(timechunker):
         self.reinit_fov_number(fov_number)
         self.writedir(self.output_path,overwrite=False)
         self.writedir(self.temp_path,overwrite=True)
-        imported_hdf5_handle = h5py.File(self.input_path,"r")
-        cropped_in_y_handles = self.crop_trenches_in_y(imported_hdf5_handle)
-        self.crop_trenches_in_x(cropped_in_y_handles)        
+        cropped_in_y_paths = self.crop_trenches_in_y()
+        self.crop_trenches_in_x(cropped_in_y_paths)   
         temp_output_file_path = self.temp_path + "output.hdf5"
         shutil.move(temp_output_file_path,self.output_file_path)
         self.save_coords()
-        for cropped_in_y_handle in cropped_in_y_handles:
-            self.delete_hdf5(cropped_in_y_handle)
+        for cropped_in_y_path in cropped_in_y_paths:
+            self.removefile(cropped_in_y_path)
         shutil.rmtree(self.temp_path)
+        return None
         
     def collect_metadata(self,fov_list,use_archive=True,overwrite_archive=False):
         archive_folder = self.output_path+"/archive"
@@ -815,7 +844,7 @@ class kychunker(timechunker):
 class kymograph_multifov(multifov):
     def __init__(self,input_file_prefix,all_channels,fov_list,trench_len_y=270,padding_y=20,trench_width_x=30,\
                  t_subsample_step=1,t_range=(0,-1),y_percentile=85,y_min_edge_dist=50,smoothing_kernel_y=(9,1),\
-                 triangle_nbins=50,triangle_scaling=1.,orientation_detection=0,x_percentile=85,background_kernel_x=(301,1),\
+                 triangle_nbins=50,triangle_scaling=1.,orientation_detection=0,expected_num_rows=None,x_percentile=85,background_kernel_x=(301,1),\
                  smoothing_kernel_x=(9,1),otsu_nbins=50,otsu_scaling=1.):
         """The kymograph class is used to generate and visualize kymographs. The central function of this
         class is the method 'generate_kymograph', which takes an hdf5 file of images from a single fov and
@@ -847,6 +876,8 @@ class kymograph_multifov(multifov):
             orientation_detection (int or str, optional): If str is 'phase', then will attempt to use phase features to autodetect orientation.
             If an int is given, orientation of the top-most row will be specified manually where 0 corresponds to a trench with
             a downward-oriented trench opening and 1 corresponds to a trench with an upward-oriented trench opening.
+            expected_num_rows (int, optional): Required if manually specifying trench orientation, specifies the number of rows expected to be
+            in the fov.
 
             x_percentile (int): Used for reducing signal in xyt to only the xt dimension when cropping
             in the x-dimension.
@@ -879,6 +910,7 @@ class kymograph_multifov(multifov):
         self.triangle_scaling = triangle_scaling
         ###
         self.orientation_detection = orientation_detection
+        self.expected_num_rows = expected_num_rows
         
 
         #### params for x
@@ -947,7 +979,7 @@ class kymograph_multifov(multifov):
             array: A smoothed percentile array of shape (y,t)
         """
         imported_array = imported_array_list[i]
-        y_percentiles = np.percentile(imported_array[0],y_percentile,axis=1)
+        y_percentiles = np.percentile(imported_array[0],y_percentile,axis=1,interpolation='lower')
         y_percentiles_smoothed = self.median_filter_2d(y_percentiles,smoothing_kernel_y)
         return y_percentiles_smoothed
     
@@ -1044,13 +1076,16 @@ class kymograph_multifov(multifov):
         trench_edges_y_list = self.get_edges_from_mask(trench_mask_y,y_min_edge_dist)
         return trench_edges_y_list
 
-    def get_manual_orientations(self,i,valid_edges_y_lists,top_orientation):
-        valid_edges_y_list = valid_edges_y_lists[i]
+    def get_manual_orientations(self,i,trench_edges_y_lists,expected_num_rows,top_orientation):
+        trench_edges_y_list = trench_edges_y_lists[i]
         orientation = top_orientation
         orientations = []
-        for row in range(valid_edges_y_list[0].shape[0]//2):
-            orientations.append(orientation)
-            orientation = (orientation+1)%2
+        if trench_edges_y_list[0].shape[0]//2 == expected_num_rows:
+            for row in range(trench_edges_y_list[0].shape[0]//2):
+                orientations.append(orientation)
+                orientation = (orientation+1)%2
+        else:
+            print("Start frame does not have expected number of rows!")
         return orientations
 
     def get_phase_orientations(self,i,y_percentiles_smoothed_list,valid_edges_y_lists,pad=50,percentile=90):
@@ -1151,14 +1186,17 @@ class kymograph_multifov(multifov):
         edge_in_bounds = edge_under_max*edge_over_min
 
         valid_edge_mask = []
+        valid_orientation_mask = []
         for i in range(0,len(edge_in_bounds),2):
             if np.all(edge_in_bounds[i:i+2]):
                 valid_edge_mask+=[True,True]
+                valid_orientation_mask+=[True]
             else:
                 valid_edge_mask+=[False,False]
+                valid_orientation_mask+=[False]
 
         valid_edges_y_list = [trench_edges_y[valid_edge_mask] for trench_edges_y in trench_edges_y_list]
-        return valid_edges_y_list
+        return valid_edges_y_list,valid_orientation_mask
     
     def get_row_numbers(self,i,trench_edges_y_list):
         """Computes the number of trench rows in the fov, from the detected edges.
@@ -1249,18 +1287,20 @@ class kymograph_multifov(multifov):
                                                self.triangle_scaling,self.y_min_edge_dist)
         
         y_midpoints_list = self.map_to_fovs(self.get_y_midpoints,trench_edges_y_lists)
-        
         y_drift_list = self.map_to_fovs(self.get_y_drift,y_midpoints_list)
-        valid_edges_y_lists = self.map_to_fovs(self.keep_in_frame_kernels,trench_edges_y_lists,\
-            y_drift_list,imported_array_list,self.padding_y)
 
         if self.orientation_detection == 'phase':
-            trench_orientations_list = self.map_to_fovs(self.get_phase_orientations,y_percentiles_smoothed_list,\
-                valid_edges_y_lists)
+            valid_edges_y_output = self.map_to_fovs(self.keep_in_frame_kernels,trench_edges_y_lists,y_drift_list,imported_array_list,self.padding_y)
+            valid_edges_y_lists = [item[0] for item in valid_edges_y_output]
+            trench_orientations_list = self.map_to_fovs(self.get_phase_orientations,y_percentiles_smoothed_list,valid_edges_y_lists)
         
         elif self.orientation_detection == 0 or self.orientation_detection == 1:
-            trench_orientations_list = self.map_to_fovs(self.get_manual_orientations,valid_edges_y_lists,self.orientation_detection)
-
+            trench_orientations_list = self.map_to_fovs(self.get_manual_orientations,trench_edges_y_lists,self.expected_num_rows,self.orientation_detection)
+            valid_edges_y_output = self.map_to_fovs(self.keep_in_frame_kernels,trench_edges_y_lists,y_drift_list,imported_array_list,self.padding_y)
+            valid_edges_y_lists = [item[0] for item in valid_edges_y_output]
+            valid_orientation_lists = [item[1] for item in valid_edges_y_output]
+            trench_orientations_list = [np.array(item)[valid_orientation_lists[i]].tolist() for i,item in enumerate(trench_orientations_list)]
+            
         else:
             print("Orientation detection value invalid!")
 
