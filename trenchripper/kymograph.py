@@ -824,10 +824,17 @@ class kychunker(timechunker):
                 shutil.move(meta_path,archive_path)
                 
         df_out = pd.concat(df_out)
+        df_out = df_out.set_index(["fov","lane","trench","timepoints"], drop=True, append=False, inplace=False)
+        
+        idx_df = df_out.groupby(["fov","lane","trench"]).size().reset_index().drop(0,axis=1).reset_index()
+        idx_df = idx_df.set_index(["fov","lane","trench"], drop=True, append=False, inplace=False)
+        idx_df = idx_df.reindex(labels=df_out.index)
+        df_out["trenchid"] = idx_df["index"]
+                
         meta_out_handle = pandas_hdf5_handler(self.metapath)
         meta_out_handle.write_df("kymo",df_out)
         
-        fovs_proc = df_out["fov"].nunique()
+        fovs_proc = len(df_out.groupby(["fov"]).size())
         lanes_proc = len(df_out.groupby(["fov","lane"]).size())
         trenches_proc = len(df_out.groupby(["fov","lane","trench"]).size())
         
@@ -836,8 +843,8 @@ class kychunker(timechunker):
         print("trenches processed: " + str(trenches_proc))
         print("lanes/fov: " + str(lanes_proc/fovs_proc))
         print("trenches/fov: " + str(trenches_proc/fovs_proc))
-        
-        failed_fovs = list(set(fov_list)-set(df_out["fov"].unique().tolist()))
+                
+        failed_fovs = list(set(fov_list)-set(df_out.index.get_level_values(0).unique().tolist()))
         print("failed fovs: " + str(failed_fovs))
         
 

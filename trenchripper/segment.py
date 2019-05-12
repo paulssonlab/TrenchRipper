@@ -4,7 +4,7 @@ import h5py
 import os
 
 from skimage import measure,feature,segmentation,future,util,morphology,filters
-from .utils import kymo_handle
+from .utils import kymo_handle,pandas_hdf5_handler
 
 class fluo_segmentation:
     def __init__(self,smooth_sigma=0.75,wrap_pad=3,hess_pad=4,min_obj_size=30,cell_mask_method='global',\
@@ -225,18 +225,29 @@ class fluo_segmentation_cluster(fluo_segmentation):
         self.output_file_path = self.output_path+"/seg_"+str(self.fov_number)+".hdf5"
 
     def generate_segmentation(self,fov_number):
+        meta_handle = pandas_hdf5_handler(self.metapath)
+        kymo_meta = meta_handle.read_df("kymo")
+        
         self.init_fov_number(fov_number)
         self.writedir(self.output_path,overwrite=False)
-        input_data = h5py.File(self.input_file_path,"r")
-        for lane in input_data.keys():
-            lane_array = input_data[lane+"/"+self.seg_channel]
-            with h5py.File(self.output_file_path, "a") as h5pyfile:
-                if lane in list(h5pyfile.keys()):
-                    hdf5_dataset = h5pyfile[lane]
-                else:
-                    hdf5_dataset = h5pyfile.create_dataset(lane, lane_array.shape, dtype=bool)     
-                for trench in range(lane_array.shape[0]):
-                    kymo_arr = lane_array[trench]
-                    segmented = self.segment(kymo_arr)
-                    hdf5_dataset[trench] = segmented
-                    
+        
+        with h5py.File(self.input_file_path,"r") as input_file:
+            for lane in input_file.keys():
+                lane_array = input_file[lane+"/"+self.seg_channel] #kyxt
+                with h5py.File(self.output_file_path, "w") as h5pyfile:
+                    for trench in range(lane_array.shape[0]):
+                        trenchid = kymo_meta.loc[int(fov_number),int(lane),int(trench),0]["trenchid"]
+                        hdf5_dataset = h5pyfile.create_dataset(str(trenchid), lane_array.shape[1:], dtype=bool)
+                        kymo_arr = lane_array[trench]
+                        hdf5_dataset = self.segment(kymo_arr)
+                
+            
+#             with h5py.File(self.output_file_path, "a") as h5pyfile: 
+#                 for trench in range(lane_array.shape[0]):
+#                     trenchid = kymo_meta.loc[int(fov_number),int(lane),int(trench),0]["trenchid"]
+#                     if str(trenchid) in list(h5pyfile.keys()):
+#                         hdf5_dataset = h5pyfile[str(trenchid)]
+#                     else:
+#                         hdf5_dataset = h5pyfile.create_dataset(str(trenchid), lane_array.shape[1:], dtype=bool)
+#                     kymo_arr = lane_array[trench]
+#                     hdf5_dataset = self.segment(kymo_arr)                    
