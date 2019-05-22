@@ -210,9 +210,9 @@ class timechunker():
             
         out_hdf5_path = self.temp_path + file_name + ".hdf5"
         return out_hdf5_path
-
+    
 class multifov():
-    def __init__(self,input_file_prefix,all_channels,fov_list):
+    def __init__(self,fov_list):
         """Write later...
             
         Args:
@@ -223,9 +223,6 @@ class multifov():
             the first position. NOTE: these names must match those of the input hdf5 file datasets.
             fov_list (list): List of ints corresponding to fovs of interest.
         """
-        self.input_file_prefix = input_file_prefix
-        self.all_channels = all_channels
-        self.seg_channel = self.all_channels[0]
         self.fov_list = fov_list
         self.num_fovs = len(fov_list)
 
@@ -278,6 +275,10 @@ class kymo_handle():
 class pandas_hdf5_handler:
     def __init__(self,hdf5_path):
         self.hdf5_path = hdf5_path
+        
+    def keys(self):
+        with pd.HDFStore(self.hdf5_path,"r") as store:
+            return store.keys()
         
     def write_df(self,key,df,metadata=None):
         with pd.HDFStore(self.hdf5_path) as store:
