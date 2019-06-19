@@ -9,7 +9,7 @@ from dask_jobqueue import SLURMCluster
 
 class dask_controller: #adapted from Charles' code
     def __init__(self,n_workers=6,local=True,queue="short",\
-                 walltime='01:30:00',cores=1,processes=1,memory='6GB'):
+                 walltime='01:30:00',cores=1,processes=1,memory='6GB',job_extra=[]):
         self.local = local
         self.n_workers = n_workers
         self.walltime = walltime
@@ -17,6 +17,7 @@ class dask_controller: #adapted from Charles' code
         self.processes = processes
         self.memory = memory
         self.cores = cores
+        self.job_extra = job_extra
         
     def writedir(self,directory):
         if not os.path.exists(directory):
@@ -29,7 +30,7 @@ class dask_controller: #adapted from Charles' code
         else:
             self.daskcluster = SLURMCluster(queue=self.queue,walltime=self.walltime,\
                                    processes=self.processes,memory=self.memory,
-                                  cores=self.cores)
+                                  cores=self.cores,job_extra=self.job_extra)
             self.workers = self.daskcluster.start_workers(self.n_workers)
             self.daskclient = Client(self.daskcluster)
     
