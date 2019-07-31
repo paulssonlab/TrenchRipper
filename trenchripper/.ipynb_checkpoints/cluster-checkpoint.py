@@ -6,6 +6,7 @@ import time
 
 from dask.distributed import Client,progress
 from dask_jobqueue import SLURMCluster
+from IPython.core.display import display, HTML
 
 class dask_controller: #adapted from Charles' code
     def __init__(self,n_workers=6,local=True,queue="short",\
@@ -48,6 +49,10 @@ class dask_controller: #adapted from Charles' code
         complete = len([item for item in self.futures if item.status=="finished"])
         print(str(complete) + "/" + str(len(self.futures)))
         
+    def displaydashboard(self):
+        link = self.daskcluster.dashboard_link
+        display(HTML('<a href="' + link +'">Dashboard</a>'))
+        
     def mapfovs(self,function,fov_list,retries=0):
         self.function = function
         self.retries = retries
@@ -57,13 +62,22 @@ class dask_controller: #adapted from Charles' code
         for fov in fov_list:
             future = self.daskclient.submit(mapallfovs,fov,retries=retries)
             self.futures[fov] = future
+
     def retry_failed(self):
         self.failed_fovs = [fov for fov,future in self.futures.items() if future.status != 'finished']
         self.daskclient.restart()
         time.sleep(5)
         self.mapfovs(self.function,self.failed_fovs,retries=self.retries)
+        
     def retry_processing(self):
         self.proc_fovs = [fov for fov,future in self.futures.items() if future.status == 'pending']
         self.daskclient.restart()
         time.sleep(5)
         self.mapfovs(self.function,self.proc_fovs,retries=self.retries)
+        
+def transferjob(sourcedir,targetdir):
+    mkdircmd = "mkdir -p " + targetdir
+    rsynccmd = "rsync -r " + sourcedir + "/ " + targetdir
+    wrapcmd = mkdircmd + " && " + rsynccmd
+    cmd = "sbatch -p transfer -t 0-12:00 --wrap=\"" + wrapcmd + "\""
+    os.system(cmd)

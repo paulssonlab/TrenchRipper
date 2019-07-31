@@ -403,77 +403,6 @@ class UNet_Training_DataLoader:
         print("Done writing data")
         
         
-class UNet_DataLoader:
-    def __init__(self,headpath,seg_channel):
-        self.headpath = headpath
-        self.kymopath = headpath + "/kymo"
-        self.segpath = headpath + "/segmentation"
-        self.nnpath = headpath + "/nn"
-        self.nnoutputpath = headpath + "/nnsegmentation"
-        self.metapath = headpath + "/metadata.hdf5"
-        self.seg_channel = seg_channel
-    
-    def writedir(self,directory,overwrite=False):
-        """Creates an empty directory at the specified location. If a directory is
-        already at this location, it will be overwritten if 'overwrite' is true,
-        otherwise it will be left alone.
-        
-        Args:
-            directory (str): Path to directory to be overwritten/created.
-            overwrite (bool, optional): Whether to overwrite a directory that
-            already exists in this location.
-        """
-        if overwrite:
-            if os.path.exists(directory):
-                shutil.rmtree(directory)
-            os.makedirs(directory)
-        else:
-            if not os.path.exists(directory):
-                os.makedirs(directory)
-        
-    def prepare_data(self,fov_num):
-        self.writedir(self.nnoutputpath,overwrite=False)
-        writepath = self.nnoutputpath + "/nninput_" + str(fov_num) + ".hdf5"
-        img_path = self.kymopath + "/kymo_" + str(fov_num) + ".hdf5"
-        with h5py.File(writepath,"w") as outfile:
-            with h5py.File(img_path,"r") as infile:
-                keys = list(infile.keys())
-                ex_data = infile[keys[0]+"/"+self.seg_channel]
-                out_shape = (len(keys)*ex_data.shape[2],1,ex_data.shape[0],ex_data.shape[1])
-                chunk_shape = (1,1,out_shape[2],out_shape[3])
-                img_handle = outfile.create_dataset("img",out_shape,chunks=chunk_shape,dtype=float)
-                
-                for i,trenchid in enumerate(keys):
-                    img_arr = infile[trenchid+"/"+self.seg_channel][:]
-                    img_arr = np.moveaxis(img_arr,(0,1,2),(1,2,0))
-                    img_arr = np.expand_dims(img_arr,1)
-                    img_arr = img_arr.astype(float)
-                    
-                    img_handle[i*ex_data.shape[2]:(i+1)*ex_data.shape[2]] = img_arr
-     
-    def postprocess(self,fov_num,threshold=0.5):
-        threshold = 0.5
-        nninputpath = self.nnoutputpath + "/nninput_" + str(fov_num) + ".hdf5"
-        nnoutputpath = self.nnoutputpath + "/nnoutput_" + str(fov_num) + ".hdf5"
-        segpath = self.nnoutputpath + "/seg_" + str(fov_num) + ".hdf5"
-        kymopath = self.kymopath + "/kymo_" + str(fov_num) + ".hdf5"
-        with h5py.File(kymopath,"r") as kymofile:
-            trench_num = len(kymofile.keys())
-            trenchids = list(kymofile.keys())
-        with h5py.File(segpath,"w") as outfile:
-            with h5py.File(nnoutputpath,"r") as infile:
-                num_img = infile["img"].shape[0]
-                y_shape,x_shape = (infile["img"].shape[2],infile["img"].shape[3])
-                timepoints = int(num_img/trench_num)
-                for trench in range(trench_num):
-                    trenchid = trenchids[trench]
-                    trench_arr = (infile["img"][trench*timepoints:(trench+1)*timepoints,0]>threshold)
-                    trench_arr = np.moveaxis(trench_arr,(0,1,2),(2,0,1))
-                    outdset = outfile.create_dataset(trenchid, data=trench_arr, chunks=(y_shape,x_shape,1), dtype=bool)
-        os.remove(nninputpath)
-        os.remove(nnoutputpath)
-        
-        
 class SegmentationDataset(Dataset):
     def __init__(self,filepath,training=False):
         self.filepath = filepath
@@ -801,23 +730,139 @@ class UNet_Trainer:
             precision, recall, thresholds = precision_recall_curve(y_true, y_scores)
             break
         return precision, recall, thresholds
+    
+# class UNet_DataLoader:
+#     def __init__(self,headpath,seg_channel):
+#         self.headpath = headpath
+#         self.kymopath = headpath + "/kymo"
+#         self.segpath = headpath + "/segmentation"
+#         self.nnpath = headpath + "/nn"
+#         self.nnoutputpath = headpath + "/nnsegmentation"
+#         self.metapath = headpath + "/metadata.hdf5"
+#         self.seg_channel = seg_channel
+    
+#     def writedir(self,directory,overwrite=False):
+#         """Creates an empty directory at the specified location. If a directory is
+#         already at this location, it will be overwritten if 'overwrite' is true,
+#         otherwise it will be left alone.
+        
+#         Args:
+#             directory (str): Path to directory to be overwritten/created.
+#             overwrite (bool, optional): Whether to overwrite a directory that
+#             already exists in this location.
+#         """
+#         if overwrite:
+#             if os.path.exists(directory):
+#                 shutil.rmtree(directory)
+#             os.makedirs(directory)
+#         else:
+#             if not os.path.exists(directory):
+#                 os.makedirs(directory)
+        
+#     def prepare_data(self,fov_num):
+#         self.writedir(self.nnoutputpath,overwrite=False)
+#         writepath = self.nnoutputpath + "/nninput_" + str(fov_num) + ".hdf5"
+#         img_path = self.kymopath + "/kymo_" + str(fov_num) + ".hdf5"
+#         with h5py.File(writepath,"w") as outfile:
+#             with h5py.File(img_path,"r") as infile:
+#                 keys = list(infile.keys())
+#                 ex_data = infile[keys[0]+"/"+self.seg_channel]
+#                 out_shape = (len(keys)*ex_data.shape[2],1,ex_data.shape[0],ex_data.shape[1])
+#                 chunk_shape = (1,1,out_shape[2],out_shape[3])
+#                 img_handle = outfile.create_dataset("img",out_shape,chunks=chunk_shape,dtype=float)
+                
+#                 for i,trenchid in enumerate(keys):
+#                     img_arr = infile[trenchid+"/"+self.seg_channel][:]
+#                     img_arr = np.moveaxis(img_arr,(0,1,2),(1,2,0))
+#                     img_arr = np.expand_dims(img_arr,1)
+#                     img_arr = img_arr.astype(float)
+                    
+#                     img_handle[i*ex_data.shape[2]:(i+1)*ex_data.shape[2]] = img_arr
+     
+#     def postprocess(self,fov_num,threshold=0.5):
+#         threshold = 0.5
+#         nninputpath = self.nnoutputpath + "/nninput_" + str(fov_num) + ".hdf5"
+#         nnoutputpath = self.nnoutputpath + "/nnoutput_" + str(fov_num) + ".hdf5"
+#         segpath = self.nnoutputpath + "/seg_" + str(fov_num) + ".hdf5"
+#         kymopath = self.kymopath + "/kymo_" + str(fov_num) + ".hdf5"
+#         with h5py.File(kymopath,"r") as kymofile:
+#             trench_num = len(kymofile.keys())
+#             trenchids = list(kymofile.keys())
+#         with h5py.File(segpath,"w") as outfile:
+#             with h5py.File(nnoutputpath,"r") as infile:
+#                 num_img = infile["img"].shape[0]
+#                 y_shape,x_shape = (infile["img"].shape[2],infile["img"].shape[3])
+#                 timepoints = int(num_img/trench_num)
+#                 for trench in range(trench_num):
+#                     trenchid = trenchids[trench]
+#                     trench_arr = (infile["img"][trench*timepoints:(trench+1)*timepoints,0]>threshold)
+#                     trench_arr = np.moveaxis(trench_arr,(0,1,2),(2,0,1))
+#                     outdset = outfile.create_dataset(trenchid, data=trench_arr, chunks=(y_shape,x_shape,1), dtype=bool)
+#         os.remove(nninputpath)
+#         os.remove(nnoutputpath)
             
 class UNet_Segmenter:
     
-    def __init__(self,headpath,paramspath,layers=3,hidden_size=64,batch_size=100,gpuon=False):
-        
+    def __init__(self,headpath,seg_channel,paramspath,min_obj_size=20,cell_threshold_scaling=1.,border_threshold_scaling=1.,\
+                 layers=3,hidden_size=64,batch_size=100,gpuon=False):
         
         self.headpath = headpath
-        self.paramspath = paramspath
+        self.kymopath = headpath + "/kymo"
+        self.segpath = headpath + "/segmentation"
+        self.nnpath = headpath + "/nn"
+        self.metapath = headpath + "/metadata.hdf5"
         self.nnoutputpath = headpath + "/nnsegmentation"
+        self.seg_channel = seg_channel
+        self.paramspath = paramspath
+        self.min_obj_size = min_obj_size
+        self.cell_threshold_scaling = cell_threshold_scaling
+        self.border_threshold_scaling = border_threshold_scaling
         self.gpuon = gpuon
         self.layers = layers
         self.hidden_size = hidden_size
         self.batch_size = batch_size
+        
+    def writedir(self,directory,overwrite=False):
+        """Creates an empty directory at the specified location. If a directory is
+        already at this location, it will be overwritten if 'overwrite' is true,
+        otherwise it will be left alone.
+        
+        Args:
+            directory (str): Path to directory to be overwritten/created.
+            overwrite (bool, optional): Whether to overwrite a directory that
+            already exists in this location.
+        """
+        if overwrite:
+            if os.path.exists(directory):
+                shutil.rmtree(directory)
+            os.makedirs(directory)
+        else:
+            if not os.path.exists(directory):
+                os.makedirs(directory)
+                
+    def prepare_data(self,fov_num):
+        self.writedir(self.nnoutputpath,overwrite=False)
+        writepath = self.nnoutputpath + "/nninput_" + str(fov_num) + ".hdf5"
+        img_path = self.kymopath + "/kymo_" + str(fov_num) + ".hdf5"
+        with h5py.File(writepath,"w") as outfile:
+            with h5py.File(img_path,"r") as infile:
+                keys = list(infile.keys())
+                ex_data = infile[keys[0]+"/"+self.seg_channel]
+                out_shape = (len(keys)*ex_data.shape[2],1,ex_data.shape[0],ex_data.shape[1])
+                chunk_shape = (1,1,out_shape[2],out_shape[3])
+                img_handle = outfile.create_dataset("img",out_shape,chunks=chunk_shape,dtype=float)
+                
+                for i,trenchid in enumerate(keys):
+                    img_arr = infile[trenchid+"/"+self.seg_channel][:]
+                    img_arr = np.moveaxis(img_arr,(0,1,2),(1,2,0))
+                    img_arr = np.expand_dims(img_arr,1)
+                    img_arr = img_arr.astype(float)
+                    
+                    img_handle[i*ex_data.shape[2]:(i+1)*ex_data.shape[2]] = img_arr
     
     def segment(self,fov_num):
         torch.cuda.empty_cache()
-        self.model = UNet(1,1,layers=self.layers,hidden_size=self.hidden_size)
+        self.model = UNet(1,3,layers=self.layers,hidden_size=self.hidden_size,withsoftmax=True)
         
         if self.gpuon:
             device = torch.device("cuda")
@@ -830,19 +875,53 @@ class UNet_Segmenter:
         
         inputpath = self.nnoutputpath + "/nninput_" + str(fov_num) + ".hdf5"
         outputpath = self.nnoutputpath + "/nnoutput_" + str(fov_num) + ".hdf5"
-        print(inputpath)
         with h5py.File(inputpath,"r") as infile:
-            out_shape = infile["img"].shape
+            out_shape = tuple((infile["img"].shape[0],3,infile["img"].shape[2],infile["img"].shape[3]))
             chunk_shape = infile["img"].chunks
         data = SegmentationDataset(inputpath,training=False)
-        data_iter = DataLoader(data,batch_size=self.batch_size,shuffle=False)
+        data_iter = DataLoader(data,batch_size=self.batch_size,shuffle=False) #careful
         with h5py.File(outputpath,"w") as outfile:
             img_handle = outfile.create_dataset("img",out_shape,chunks=chunk_shape,dtype=float)
+            print(len(data_iter))
             for i,b in enumerate(data_iter):
-                x = Variable(b['img'].float())
+                print(i)
+                x = torch.Tensor(b['img'].numpy())
                 if self.gpuon:
                     x = x.cuda()
-                fx = self.model.forward(x)
+                fx = self.model.forward(x) #N,3,y,x
                 img_handle[i*self.batch_size:(i+1)*self.batch_size] = fx.cpu().data.numpy()
-    def test(self):
-        print("test")
+        
+    def postprocess(self,fov_num):
+        nninputpath = self.nnoutputpath + "/nninput_" + str(fov_num) + ".hdf5"
+        nnoutputpath = self.nnoutputpath + "/nnoutput_" + str(fov_num) + ".hdf5"
+        segpath = self.nnoutputpath + "/seg_" + str(fov_num) + ".hdf5"
+        kymopath = self.kymopath + "/kymo_" + str(fov_num) + ".hdf5"
+        with h5py.File(kymopath,"r") as kymofile:
+            trench_num = len(kymofile.keys())
+            trenchids = list(kymofile.keys())
+        with h5py.File(segpath,"w") as outfile:
+            with h5py.File(nnoutputpath,"r") as infile:
+                num_img = infile["img"].shape[0]
+                y_shape,x_shape = (infile["img"].shape[2],infile["img"].shape[3])
+                timepoints = int(num_img/trench_num)
+                for trench in range(trench_num):
+                    print(trench)
+                    trenchid = trenchids[trench]
+                    trench_data = infile["img"][trench*timepoints:(trench+1)*timepoints] #t,3,y,x
+                    trench_output = []
+                    for t in range(timepoints):
+                        cell_otsu = sk.filters.threshold_otsu(trench_data[t,1])*self.cell_threshold_scaling
+                        border_otsu = sk.filters.threshold_otsu(trench_data[t,2])*self.border_threshold_scaling
+                        cell_mask = trench_data[t,1]>cell_otsu
+                        border_mask = trench_data[t,2]>border_otsu
+                        trench_arr = cell_mask*(~border_mask)
+                        del cell_mask
+                        del border_mask
+                        trench_arr = sk.morphology.remove_small_objects(trench_arr,min_size=self.min_obj_size)                        
+                        trench_output.append(trench_arr)
+                        del trench_arr
+                    trench_output = np.array(trench_output)
+                    trench_output = np.moveaxis(trench_output,(0,1,2),(2,0,1))
+                    outdset = outfile.create_dataset(trenchid, data=trench_output, chunks=(y_shape,x_shape,1), dtype=bool)
+#         os.remove(nninputpath)
+#         os.remove(nnoutputpath)

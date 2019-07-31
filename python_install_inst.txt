@@ -12,7 +12,7 @@ jupyter labextension install @jupyter-widgets/jupyterlab-manager
 conda install -c conda-forge tensorflow tensorboard
 pip install jupyter-tensorboard
 jupyter labextension install jupyterlab_tensorboard
-
+jupyter labextension install @jupyterlab/toc
 ## Making new conda environment
 
 conda create -n mothermachine python=3.6.8

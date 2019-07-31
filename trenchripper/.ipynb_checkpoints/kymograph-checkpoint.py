@@ -13,8 +13,8 @@ from skimage import filters
 from .utils import timechunker,multifov,pandas_hdf5_handler
 
 class kychunker(timechunker):
-    def __init__(self,headpath="",fov_number=0,all_channels=[""],trench_len_y=270,padding_y=20,trench_width_x=30,\
-                 t_chunk=1,t_range=(0,-1),y_percentile=85,y_min_edge_dist=50,smoothing_kernel_y=(9,1),triangle_nbins=50,triangle_scaling=1.,\
+    def __init__(self,headpath="",fov_number=0,paramfile=False,all_channels=[""],trench_len_y=270,padding_y=20,trench_width_x=30,\
+                 t_chunk=1,t_range=(0,None),y_percentile=85,y_min_edge_dist=50,smoothing_kernel_y=(9,1),triangle_nbins=50,triangle_scaling=1.,\
                  orientation_detection=0,expected_num_rows=None,orientation_on_fail=None,x_percentile=85,background_kernel_x=(301,1),smoothing_kernel_x=(9,1),\
                  otsu_nbins=50,otsu_scaling=1.,trench_present_thr=0.):
         """The kymograph class is used to generate kymographs using chunked computation on hdf5 arrays. The central function of this
@@ -69,6 +69,31 @@ class kychunker(timechunker):
         input_file_prefix = headpath + "/hdf5/fov_"
         output_path = headpath + "/kymo"
         
+        if paramfile:
+            parampath = headpath + "/kymograph.par"
+            with open(parampath, 'rb') as infile:
+                param_dict = pickle.load(infile)
+                
+            all_channels = param_dict["All Channels"]
+            trench_len_y = param_dict["Trench Length"]
+            padding_y = param_dict["Y Padding"]
+            trench_width_x = param_dict["Trench Width"]
+            t_range = param_dict["Time Range"]
+            y_percentile = param_dict["Y Percentile"]
+            y_min_edge_dist = param_dict["Minimum Trench Length"]
+            smoothing_kernel_y = (param_dict["Y Smoothing Kernel"],1)
+            triangle_nbins = param_dict["Triangle Trheshold Bins"]
+            triangle_scaling = param_dict["Triangle Threshold Scaling"]
+            orientation_detection = param_dict["Orientation Detection Method"]
+            expected_num_rows = param_dict["Expected Number of Rows (Manual Orientation Detection)"]
+            orientation_on_fail = param_dict["Top Orientation when Row Drifts Out (Manual Orientation Detection)"]
+            x_percentile = param_dict["X Percentile"]
+            background_kernel_x = (param_dict["X Background Kernel"],1)
+            smoothing_kernel_x = (param_dict["X Smoothing Kernel"],1)
+            otsu_nbins = param_dict["Otsu Trheshold Bins"]
+            otsu_scaling = param_dict["Otsu Threshold Scaling"]
+            trench_present_thr =  param_dict["Trench Presence Threshold"]        
+        
         super(kychunker, self).__init__(input_file_prefix,output_path,fov_number,all_channels,t_chunk=t_chunk,img_chunk_size=128)
         self.headpath = headpath
         self.metapath = self.headpath + "/metadata.hdf5"
@@ -106,7 +131,7 @@ class kychunker(timechunker):
         self.otsu_scaling = otsu_scaling
         ## New
         self.trench_present_thr = trench_present_thr
-    
+        
     def median_filter_2d(self,array,smoothing_kernel):
         """Two-dimensional median filter, with average smoothing at the signal edges in
         the first dimension (the non-time dimension).
@@ -472,7 +497,8 @@ class kychunker(timechunker):
                 
         with h5py_cache.File(self.input_path,"r",chunk_cache_mem_size=self.chunk_cache_mem_size) as imported_hdf5_handle:
             cropped_in_y_path = self.chunk_t((imported_hdf5_handle[self.seg_channel],y_drift),(2,0),3,self.crop_y,"cropped_in_y_"+str(self.seg_channel),"data",\
-                                                   valid_edges_y_list[0],self.padding_y,self.trench_len_y,self.trench_orientations,t_range_tuple=(self.t_range,(0,-1)),write_coords=True)
+                                                   valid_edges_y_list[0],self.padding_y,self.trench_len_y,self.trench_orientations,t_range_tuple=(self.t_range,\
+                                                    (0,None)),write_coords=True)
             
         cropped_in_y_paths.append(cropped_in_y_path)
         self.y_coords = np.array(self.y_coords).T
@@ -480,7 +506,7 @@ class kychunker(timechunker):
         for channel in self.all_channels[1:]:
             with h5py_cache.File(self.input_path,"r",chunk_cache_mem_size=self.chunk_cache_mem_size) as imported_hdf5_handle:
                 cropped_in_y_path = self.chunk_t((imported_hdf5_handle[channel],y_drift),(2,0),3,self.crop_y,"cropped_in_y_"+str(channel),"data",\
-                                                   valid_edges_y_list[0],self.padding_y,self.trench_len_y,self.trench_orientations,t_range_tuple=(self.t_range,(0,-1)))
+                                                   valid_edges_y_list[0],self.padding_y,self.trench_len_y,self.trench_orientations,t_range_tuple=(self.t_range,(0,None)))
             cropped_in_y_paths.append(cropped_in_y_path)
         return cropped_in_y_paths
     
@@ -792,9 +818,14 @@ class kychunker(timechunker):
         pixel_microns = global_meta.metadata['pixel_microns']
         
         global_fov = global_meta[global_meta["fov"]==self.fov_number]
-        global_x = (global_fov["x"].values)[self.t_range[0]:self.t_range[1]]
-        global_y = (global_fov["y"].values)[self.t_range[0]:self.t_range[1]]
-        ts = (global_fov["t"].values)[self.t_range[0]:self.t_range[1]]
+        if self.t_range[1] == None:
+            global_x = (global_fov["x"].values)[self.t_range[0]:]
+            global_y = (global_fov["y"].values)[self.t_range[0]:]
+            ts = (global_fov["t"].values)[self.t_range[0]:]
+        else:
+            global_x = (global_fov["x"].values)[self.t_range[0]:self.t_range[1]]
+            global_y = (global_fov["y"].values)[self.t_range[0]:self.t_range[1]]
+            ts = (global_fov["t"].values)[self.t_range[0]:self.t_range[1]]
         tpts = np.array(range(ts.shape[0]))
         orit_dict = {0:"top",1:"bottom"}
 
@@ -851,7 +882,7 @@ class kychunker(timechunker):
         shutil.rmtree(self.temp_path)
         return None
         
-    def collect_metadata(self,fov_list,use_archive=True,overwrite_archive=False):
+    def collect_metadata(self,fov_list,use_archive=False,overwrite_archive=True):
         archive_folder = self.output_path+"/archive"
         self.writedir(archive_folder,overwrite=overwrite_archive)
         df_out = []
@@ -877,20 +908,11 @@ class kychunker(timechunker):
         df_out["trenchid"] = idx_df["index"]
                 
         meta_out_handle = pandas_hdf5_handler(self.metapath)
-        meta_out_handle.write_df("kymo",df_out)
+        meta_out_handle.write_df("kymo",df_out,metadata={"attempted_fov_list":fov_list})
         
-        fovs_proc = len(df_out.groupby(["fov"]).size())
-        lanes_proc = len(df_out.groupby(["fov","lane"]).size())
-        trenches_proc = len(df_out.groupby(["fov","lane","trench"]).size())
+        successful_fovs = set(df_out.index.get_level_values(0).unique().tolist())
         
-        print("fovs processed: " + str(fovs_proc) + "/" + str(len(fov_list)))
-        print("lanes processed: " + str(lanes_proc))
-        print("trenches processed: " + str(trenches_proc))
-        print("lanes/fov: " + str(lanes_proc/fovs_proc))
-        print("trenches/fov: " + str(trenches_proc/fovs_proc))
-                
-        failed_fovs = list(set(fov_list)-set(df_out.index.get_level_values(0).unique().tolist()))
-        print("failed fovs: " + str(failed_fovs))
+        return list(successful_fovs)
         
     def reorg_kymographs(self,fov_number):
         
@@ -899,9 +921,9 @@ class kychunker(timechunker):
         kymo_handle = meta_handle.read_df("kymo")
         
         proc_file_path = self.output_path+"/kymo_proc_"+str(self.fov_number)+".hdf5"
-
-        with h5py.File(proc_file_path,"w") as outfile:
-            with h5py.File(self.output_file_path,"r") as infile:
+        
+        with h5py.File(self.output_file_path,"r") as infile:
+            with h5py.File(proc_file_path,"w") as outfile:
                 fov_handle = kymo_handle.loc[fov_number]
                 lane_list = fov_handle.index.get_level_values('lane').unique().tolist()
                 for lane in lane_list:
@@ -928,10 +950,80 @@ class kychunker(timechunker):
             shutil.move(proc_file_path,kymo_path)
             self.removefile(proc_file_path)
         
+    def dask_full_kymograph(self,dask_controller,fov_list=None):
+        if fov_list == None:
+            meta_handle = pandas_hdf5_handler(self.metapath)
+            df_in = meta_handle.read_df("global",read_metadata=True)
+            fov_list = df_in.metadata['fields_of_view']
+        dask_controller.futures = {}
+        
+        def genkymo(fov,function=self.generate_kymograph):
+            try:
+                function(fov)
+                return fov
+            except:
+                return "error"
+        
+        def collectmeta(future_list,fov_list=fov_list,function=self.collect_metadata):
+            try:
+                successful_fovs = function(fov_list)
+                return successful_fovs
+            except:
+                return "error"
+            
+        def reorgkymo(future_list,fov,function=self.reorg_kymographs):
+            try:
+                function(fov)
+                return fov
+            except:
+                return "error"
+        
+        def cleankymo(reorg_futures,function=self.cleanup_kymographs):
+            try:
+                function()
+                return "success"
+            except:
+                return "failure"
+            
+        kymo_futures_list = []
+        for fov in fov_list:
+            future = dask_controller.daskclient.submit(genkymo,fov,retries=1)
+            dask_controller.futures["generate_kymograph: " + str(fov)] = future
+            kymo_futures_list.append(future)
+        successful_fovs_future = dask_controller.daskclient.submit(collectmeta,kymo_futures_list,retries=0)
+        dask_controller.futures["collect_metadata: list"] = successful_fovs_future
+        
+        reorg_futures = []
+        for reorg_idx,fov in enumerate(fov_list):
+            future = dask_controller.daskclient.submit(reorgkymo,successful_fovs_future,fov,retries=0)
+            dask_controller.futures["reorg_kymographs: " + str(reorg_idx)] = future
+            reorg_futures.append(future)
+        
+        success_future = dask_controller.daskclient.submit(cleankymo,reorg_futures,retries=0)
+        dask_controller.futures["output_kymographs"] = success_future
+        
+    def kymo_report(self):
+        meta_handle = pandas_hdf5_handler(self.metapath)
+        df_in = meta_handle.read_df("kymo",read_metadata=True)
+        
+        fov_list = df_in.metadata["attempted_fov_list"]
 
+        fovs_proc = len(df_in.groupby(["fov"]).size())
+        lanes_proc = len(df_in.groupby(["fov","lane"]).size())
+        trenches_proc = len(df_in.groupby(["fov","lane","trench"]).size())
+
+        print("fovs processed: " + str(fovs_proc) + "/" + str(len(fov_list)))
+        print("lanes processed: " + str(lanes_proc))
+        print("trenches processed: " + str(trenches_proc))
+        print("lanes/fov: " + str(lanes_proc/fovs_proc))
+        print("trenches/fov: " + str(trenches_proc/fovs_proc))
+
+        successful_fovs = set(df_in.index.get_level_values(0).unique().tolist())
+        failed_fovs = list(set(fov_list)-successful_fovs)
+        print("failed fovs: " + str(failed_fovs))
+            
 class kymograph_multifov(multifov):
-    def __init__(self,headpath,all_channels,fov_list,trench_len_y=270,padding_y=20,trench_width_x=30,\
-                 t_subsample_step=1,t_range=(0,-1),y_percentile=85,y_min_edge_dist=50,smoothing_kernel_y=(9,1),\
+    def __init__(self,headpath,trench_len_y=270,padding_y=20,trench_width_x=30,y_percentile=85,y_min_edge_dist=50,smoothing_kernel_y=(9,1),\
                  triangle_nbins=50,triangle_scaling=1.,orientation_detection=0,expected_num_rows=None,orientation_on_fail=None,\
                  x_percentile=85,background_kernel_x=(301,1),smoothing_kernel_x=(9,1),otsu_nbins=50,otsu_scaling=1.,trench_present_thr=0.):
         """The kymograph class is used to generate and visualize kymographs. The central function of this
@@ -976,15 +1068,20 @@ class kymograph_multifov(multifov):
             otsu_nbins (int): Number of bins to use when applying Otsu's method to x-dimension signal.
             otsu_scaling (float): Threshold scaling factor for Otsu's method thresholding.
         """
-        super(kymograph_multifov, self).__init__(fov_list)
+        #break all_channels,fov_list,t_subsample_step=t_subsample_step
         
+#         super(kymograph_multifov, self).__init__()
+        # super(kymograph_multifov, self).__init__(fov_list)
+
+        self.headpath = headpath
         self.input_file_prefix = headpath + '/hdf5/fov_'
-        self.all_channels = all_channels
-        self.seg_channel = all_channels[0]
+        self.metapath = headpath + "/metadata.hdf5"
+#         self.all_channels = all_channels
+#         self.seg_channel = all_channels[0]
         
         #### For prieviewing
-        self.t_subsample_step = t_subsample_step
-        self.t_range = t_range
+#         self.t_subsample_step = t_subsample_step
+#         self.t_range = t_range
         
         #### important paramaters to set
         self.trench_len_y = trench_len_y
@@ -1035,6 +1132,21 @@ class kymograph_multifov(multifov):
         med_filter[:kernel_pad[0]] = start_edge
         med_filter[-kernel_pad[0]:] = end_edge
         return med_filter
+    
+    def import_hdf5_files(self,all_channels,seg_channel,fov_list,t_range,t_subsample_step):
+        seg_channel_idx = all_channels.index(seg_channel)
+        all_channels.insert(0, all_channels.pop(seg_channel_idx))
+        self.all_channels = all_channels
+        self.seg_channel = all_channels[0]
+        self.fov_list = fov_list
+        self.t_range = (t_range[0],t_range[1]+1)
+        self.t_subsample_step = t_subsample_step
+        
+        super(kymograph_multifov, self).__init__(fov_list)
+        
+        imported_array_list = self.map_to_fovs(self.import_hdf5)
+        
+        return imported_array_list
         
     def import_hdf5(self,i):
         """Performs initial import of the hdf5 file to be processed. Converts the input hdf5 file's "channel"
@@ -1047,9 +1159,13 @@ class kymograph_multifov(multifov):
         Returns:
             array: A numpy array containing the hdf5 file image data.
         """
+        
         fov = self.fov_list[i]
         hdf5_handle = h5py.File(self.input_file_prefix + str(fov) + ".hdf5", "a")
-        t_len = list(range(hdf5_handle[self.seg_channel].shape[2]))[self.t_range[1]]+1
+        if self.t_range[1] == None:
+            t_len = hdf5_handle[self.seg_channel].shape[2]
+        else:
+            t_len = list(range(hdf5_handle[self.seg_channel].shape[2]))[self.t_range[1]-1]
         indices = list(range(self.t_range[0],t_len,self.t_subsample_step))
         arr_list = []
         for channel in self.all_channels:

@@ -184,13 +184,14 @@ class timechunker():
         """
         
         if t_range_tuple == None:
-            t_range_tuple = tuple([(0,-1) for i in range(len(hdf5_array_tuple))])
+            t_range_tuple = tuple([(0,None) for i in range(len(hdf5_array_tuple))])
         
         t_initial_list = [item[0] for item in t_range_tuple]
-        if t_range_tuple[0][1] == -1:
-            t_final_0 = hdf5_array_tuple[0].shape[t_dim_in_tuple[0]]-1
+        t_dim_total_len = hdf5_array_tuple[0].shape[t_dim_in_tuple[0]]
+        if t_range_tuple[0][1] == None:
+            t_final_0 = t_dim_total_len-1
         else:
-            t_final_0 = t_range_tuple[0][1]-1
+            t_final_0 = list(range(t_dim_total_len))[t_range_tuple[0][1]-1]
         t_len = t_final_0 - t_initial_list[0] + 1
 
         for ti in range(0,t_len,self.t_chunk):

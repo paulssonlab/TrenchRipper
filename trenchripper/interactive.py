@@ -2,17 +2,17 @@ import matplotlib.pyplot as plt
 import numpy as np
 import skimage as sk
 import h5py
+import pickle
 
 from skimage import filters
 from mpl_toolkits.mplot3d import Axes3D
 from matplotlib.collections import PolyCollection
 from .kymograph import kymograph_multifov
 from .segment import fluo_segmentation
-from .utils import kymo_handle
+from .utils import kymo_handle,pandas_hdf5_handler
 
 class kymograph_interactive(kymograph_multifov):
-    def __init__(self,headpath,all_channels,fov_list,trench_len_y=270,padding_y=20,trench_width_x=30,\
-                 t_subsample_step=1,t_range=(0,-1),y_percentile=85,y_min_edge_dist=50,smoothing_kernel_y=(9,1),\
+    def __init__(self,headpath,trench_len_y=270,padding_y=20,trench_width_x=30,y_percentile=85,y_min_edge_dist=50,smoothing_kernel_y=(9,1),\
                  triangle_nbins=50,triangle_scaling=1.,orientation_detection=0,expected_num_rows=None,orientation_on_fail=None,\
                  x_percentile=85,background_kernel_x=(301,1),smoothing_kernel_x=(9,1),\
                  otsu_nbins=50,otsu_scaling=1.,trench_present_thr=0.):
@@ -53,8 +53,9 @@ class kymograph_interactive(kymograph_multifov):
             otsu_nbins (int): Number of bins to use when applying Otsu's method to x-dimension signal.
             otsu_scaling (float): Threshold scaling factor for Otsu's method thresholding.
         """
-        super(kymograph_interactive, self).__init__(headpath,all_channels,fov_list,trench_len_y=trench_len_y,\
-            padding_y=padding_y,trench_width_x=trench_width_x,t_subsample_step=t_subsample_step,t_range=t_range,y_percentile=y_percentile,\
+        #break all_channels,fov_list,t_subsample_step=t_subsample_step
+        super(kymograph_interactive, self).__init__(headpath,trench_len_y=trench_len_y,\
+            padding_y=padding_y,trench_width_x=trench_width_x,y_percentile=y_percentile,\
             y_min_edge_dist=y_min_edge_dist,smoothing_kernel_y=smoothing_kernel_y,triangle_nbins=triangle_nbins,\
             triangle_scaling=triangle_scaling,orientation_detection=orientation_detection,expected_num_rows=expected_num_rows,\
             orientation_on_fail=orientation_on_fail,x_percentile=x_percentile,background_kernel_x=background_kernel_x,\
@@ -62,17 +63,22 @@ class kymograph_interactive(kymograph_multifov):
         
         self.final_params = {}
         
-        
     def get_image_params(self,fov_idx):
         hdf5_handle = h5py.File(self.input_file_prefix + str(fov_idx) + ".hdf5", "a")
         channels = list(hdf5_handle.keys())
-        data = hdf5_handle[self.all_channels[0]]
-        return channels,data.shape
+        data = hdf5_handle[channels[0]]
+        
+        meta_handle = pandas_hdf5_handler(self.metapath)
+        df_in = meta_handle.read_df("global",read_metadata=True)
+        fov_list = df_in.metadata['fields_of_view']
+        timepoints_len = len(df_in.metadata['frames'])
+        
+        return channels,data.shape,fov_list,timepoints_len
         
     def view_image(self,fov_idx,t,channel):
         hdf5_handle = h5py.File(self.input_file_prefix + str(fov_idx) + ".hdf5", "a")
         plt.imshow(hdf5_handle[channel][:,:,t])
-        hdf5_handle.close()
+        hdf5_handle.close()    
 
     def preview_y_precentiles(self,imported_array_list, y_percentile, smoothing_kernel_y_dim_0,\
                           triangle_nbins,triangle_scaling):
@@ -317,26 +323,43 @@ class kymograph_interactive(kymograph_multifov):
         img_arr = np.concatenate(list_in_t,axis=1)
         ax.imshow(img_arr)
         
-    def print_results(self):
+    def process_results(self):
+        self.final_params["All Channels"] = self.all_channels
+        self.final_params["Time Range"] = self.t_range
+        
         for key,value in self.final_params.items():
             print(key + " " + str(value))
+    
+    def write_param_file(self):
+        with open(self.headpath + "/kymograph.par", "wb") as outfile:
+            pickle.dump(self.final_params, outfile)
 
 class fluo_segmentation_interactive(fluo_segmentation):
-    def __init__(self,headpath,seg_channel,smooth_sigma=0.75,wrap_pad=3,hess_pad=4,min_obj_size=30,cell_mask_method='local',\
-                 global_otsu_scaling=1.,cell_otsu_scaling=1.,local_otsu_r=15,edge_threshold_scaling=1.,threshold_step_perc=0.1,threshold_perc_num_steps=2,convex_threshold=0.8):
+    def __init__(self,headpath,smooth_sigma=0.75,wrap_pad=0,hess_pad=4,min_obj_size=30,cell_mask_method='local',\
+                 global_otsu_scaling=1.,cell_otsu_scaling=1.,local_otsu_r=15,edge_threshold_scaling=1.,threshold_step_perc=0.1,\
+                 threshold_perc_num_steps=2,convex_threshold=0.8):
         
-        fluo_segmentation.__init__(self,smooth_sigma=smooth_sigma,wrap_pad=wrap_pad,hess_pad=hess_pad,\
-            min_obj_size=min_obj_size,cell_mask_method=cell_mask_method,global_otsu_scaling=global_otsu_scaling,cell_otsu_scaling=cell_otsu_scaling,local_otsu_r=local_otsu_r,\
-            edge_threshold_scaling=edge_threshold_scaling,threshold_step_perc=threshold_step_perc,threshold_perc_num_steps=threshold_perc_num_steps,\
-            convex_threshold=convex_threshold)
+        fluo_segmentation.__init__(self,smooth_sigma=smooth_sigma,wrap_pad=wrap_pad,hess_pad=hess_pad,min_obj_size=min_obj_size,\
+                                   cell_mask_method=cell_mask_method,global_otsu_scaling=global_otsu_scaling,cell_otsu_scaling=cell_otsu_scaling,\
+                                   local_otsu_r=local_otsu_r,edge_threshold_scaling=edge_threshold_scaling,threshold_step_perc=threshold_step_perc,\
+                                   threshold_perc_num_steps=threshold_perc_num_steps,convex_threshold=convex_threshold)
 
         self.headpath = headpath
-        self.seg_channel = seg_channel
         self.input_path = headpath + "/kymo"
         self.input_file_prefix = self.input_path + "/kymo_"
         self.metapath = headpath + "/metadata.hdf5"
         
+        meta_handle = pandas_hdf5_handler(self.metapath)
+        df_in = meta_handle.read_df("global",read_metadata=True)
+        self.all_channels = ["channel_" + channel for channel in df_in.metadata['channels']]
+        df_in = meta_handle.read_df("kymo")
+        timepoint_num = len(df_in.index.get_level_values(3).unique().tolist())
+        self.t_range = (0,timepoint_num)
+        
         self.final_params = {}
+        
+    def choose_seg_channel(self,seg_channel):
+        self.seg_channel = seg_channel
         
     def plot_img_list(self,img_list):
         nrow = (len(img_list)+1)//2
@@ -355,13 +378,16 @@ class fluo_segmentation_interactive(fluo_segmentation):
         plt.tight_layout()
         plt.show()         
         
-    def import_array(self,fov_idx,n_trenches,t_range=(0,-1),t_subsample_step=1,fig_size_y=9,fig_size_x=6):
+    def import_array(self,fov_idx,n_trenches,t_range=(0,None),t_subsample_step=1,fig_size_y=9,fig_size_x=6):
         self.fig_size = (fig_size_y,fig_size_x)
         with h5py.File(self.input_file_prefix + str(fov_idx) + ".hdf5", "r") as hdf5_handle:
             ttl_trenches = len(hdf5_handle.keys())
             chosen_trenches = np.random.choice(np.array(list(range(0,ttl_trenches))),size=n_trenches,replace=False)
             chosen_trench_keys = np.array(list(hdf5_handle.keys()))[chosen_trenches].tolist()
-            array_list = [hdf5_handle[trench_key + "/" + self.seg_channel][:,:,t_range[0]:t_range[1]:t_subsample_step] for trench_key in chosen_trench_keys]
+            if t_range[1] == None:
+                array_list = [hdf5_handle[trench_key + "/" + self.seg_channel][:,:,t_range[0]::t_subsample_step] for trench_key in chosen_trench_keys]
+            else:
+                array_list = [hdf5_handle[trench_key + "/" + self.seg_channel][:,:,t_range[0]:t_range[1]+1:t_subsample_step] for trench_key in chosen_trench_keys]
             output_array = np.concatenate(np.expand_dims(array_list,axis=0),axis=0)
             self.t_tot = output_array.shape[3]
         self.plot_kymographs(output_array)
@@ -467,6 +493,11 @@ class fluo_segmentation_interactive(fluo_segmentation):
         self.plot_img_list(final_mask_list)
         return final_mask_list
     
-    def print_results(self):
+    def process_results(self):
+        self.final_params["Segmentation Channel:"] = self.seg_channel
         for key,value in self.final_params.items():
             print(key + " " + str(value))
+    
+    def write_param_file(self):
+        with open(self.headpath + "/fluorescent_segmentation.par", "wb") as outfile:
+            pickle.dump(self.final_params, outfile)
