@@ -10,7 +10,8 @@ from torch.utils.data import Dataset, DataLoader
 from sklearn.metrics import precision_recall_curve
 from scipy.ndimage.interpolation import map_coordinates
 from scipy.interpolate import RectBivariateSpline
-from scipy import interpolate
+from scipy import interpolate,ndimage
+from ipywidgets import interact, interactive, fixed, interact_manual, FloatSlider, IntSlider, Dropdown, IntText, SelectMultiple, IntRangeSlider
 
 import skimage as sk
 import pickle as pkl
@@ -76,12 +77,8 @@ class data_augmentation:
 
             rescaled_img = sk.transform.rescale(working_arr[low_crop[0,t]:high_crop[0,t],low_crop[1,t]:high_crop[1,t]],(dim_0_scale,dim_1_scale),preserve_range=True).astype(int)
             rescaled_seg = (sk.transform.rescale(working_seg_arr[low_crop[0,t]:high_crop[0,t],low_crop[1,t]:high_crop[1,t]]==1,(dim_0_scale,dim_1_scale))>0.5).astype("int8")
-            rescaled_border = (sk.transform.rescale(working_seg_arr[low_crop[0,t]:high_crop[0,t],low_crop[1,t]:high_crop[1,t]]==2,(dim_0_scale,dim_1_scale))>0.5)
-            rescaled_seg[rescaled_border] = 2
-#             rot_seg_arr[t,rot_cell] = 1
-#             rot_seg_arr[t,rot_border] = 2
-            
-#             rescaled_seg = (sk.transform.rescale(working_seg_arr[low_crop[0,t]:high_crop[0,t],low_crop[1,t]:high_crop[1,t]],(dim_0_scale,dim_1_scale),preserve_range=True)>0.5)
+#             rescaled_border = (sk.transform.rescale(working_seg_arr[low_crop[0,t]:high_crop[0,t],low_crop[1,t]:high_crop[1,t]]==2,(dim_0_scale,dim_1_scale))>0.5)
+#             rescaled_seg[rescaled_border] = 2
 
             top_left = (center[0]-rescaled_img.shape[0]//2,center[1]-rescaled_img.shape[1]//2)        
             working_arr[top_left[0]:top_left[0]+rescaled_img.shape[0],top_left[1]:top_left[1]+rescaled_img.shape[1]] = rescaled_img
@@ -95,32 +92,7 @@ class data_augmentation:
             out_seg_arr.append(working_seg_arr)
         out_arr = np.expand_dims(np.array(out_arr),1)
         out_seg_arr = np.array(out_seg_arr)
-#         out_seg_arr = np.expand_dims(np.array(out_seg_arr),1)
-#         out_arr = np.moveaxis(np.array(out_arr),(0,1,2),(2,0,1))
-#         out_seg_arr = np.moveaxis(np.array(out_seg_arr),(0,1,2),(2,0,1))
         return out_arr,out_seg_arr
-        
-#     def random_crop(self,img_arr,seg_arr):
-#         false_arr = np.zeros(img_arr.shape[:2],dtype=bool)
-#         random_low_samples = np.random.uniform(low=0.,high=0.8,size=(2,img_arr.shape[-1]))
-#         low_crop = (random_low_samples*np.array(img_arr.shape[:2])[:,np.newaxis]).astype('uint16')
-#         remainder = np.array(img_arr.shape[:2])[:,np.newaxis]-low_crop
-#         random_high_samples = np.random.uniform(low=0.2,high=1.,size=(2,img_arr.shape[-1]))
-#         high_crop = np.floor(random_high_samples*remainder).astype('uint16')+low_crop
-#         out_arr = []
-#         out_seg_arr = []
-#         for t in range(img_arr.shape[2]):
-#             mask = copy.copy(false_arr)
-#             working_arr = copy.copy(img_arr[:,:,t])
-#             working_seg_arr = copy.copy(seg_arr[:,:,t])
-#             mask[low_crop[0,t]:high_crop[0,t],low_crop[1,t]:high_crop[1,t]] = True
-#             working_arr[~mask] = 0
-#             working_seg_arr[~mask] = False
-#             out_arr.append(working_arr)
-#             out_seg_arr.append(working_seg_arr)
-#         out_arr = np.moveaxis(np.array(out_arr),(0,1,2),(2,0,1))
-#         out_seg_arr = np.moveaxis(np.array(out_seg_arr),(0,1,2),(2,0,1))
-#         return out_arr,out_seg_arr
     
     def random_x_flip(self,img_arr,seg_arr,p=0.5):
         choices = np.random.choice(np.array([True,False]),size=img_arr.shape[0],p=np.array([p,1.-p]))
@@ -179,22 +151,11 @@ class data_augmentation:
             trans_x = np.random.randint(-(delta_x//2),high=delta_x//2)
             trans_img_arr[t,0,delta_y//2:delta_y//2+img_arr.shape[0],delta_x//2:delta_x//2+img_arr.shape[1]] = 0
             trans_seg_arr[t,delta_y//2:delta_y//2+img_arr.shape[0],delta_x//2:delta_x//2+img_arr.shape[1]] = 0
-            trans_img_arr[t,0,delta_y//2+trans_y:delta_y//2+img_arr.shape[0]+trans_y,delta_x//2+trans_x:delta_x//2+img_arr.shape[1]+trans_x] = pad_img_arr[t,0,delta_y//2:delta_y//2+img_arr.shape[0],delta_x//2:delta_x//2+img_arr.shape[1]]
-            trans_seg_arr[t,delta_y//2+trans_y:delta_y//2+img_arr.shape[0]+trans_y,delta_x//2+trans_x:delta_x//2+img_arr.shape[1]+trans_x] = pad_seg_arr[t,delta_y//2:delta_y//2+img_arr.shape[0],delta_x//2:delta_x//2+img_arr.shape[1]]
+            trans_img_arr[t,0,delta_y//2+trans_y:delta_y//2+img_arr.shape[0]+trans_y,delta_x//2+trans_x:delta_x//2+img_arr.shape[1]+trans_x] =\
+            pad_img_arr[t,0,delta_y//2:delta_y//2+img_arr.shape[0],delta_x//2:delta_x//2+img_arr.shape[1]]
+            trans_seg_arr[t,delta_y//2+trans_y:delta_y//2+img_arr.shape[0]+trans_y,delta_x//2+trans_x:delta_x//2+img_arr.shape[1]+trans_x] =\
+            pad_seg_arr[t,delta_y//2:delta_y//2+img_arr.shape[0],delta_x//2:delta_x//2+img_arr.shape[1]]
         return trans_img_arr,trans_seg_arr
-
-#     def add_padding(self,img_arr,seg_arr):
-#         hyp_length = np.ceil((img_arr.shape[0]**2+img_arr.shape[1]**2)**(1/2)).astype(int)
-#         delta_y = hyp_length-img_arr.shape[0]
-#         delta_x = hyp_length-img_arr.shape[1]
-#         if delta_x % 2 == 1:
-#             delta_x+=1
-#         if delta_y % 2 == 1:
-#             delta_y+=1
-#         padded_img_arr = np.pad(img_arr, ((delta_y//2,delta_y//2),(delta_x//2,delta_x//2),(0,0)), 'constant', constant_values=0)
-#         padded_seg_arr = np.pad(seg_arr, ((delta_y//2,delta_y//2),(delta_x//2,delta_x//2),(0,0)), 'constant', constant_values=0)
-#         return padded_img_arr,padded_seg_arr
-    
     
     def rotate(self,img_arr,seg_arr,max_rot=20):
         rot_img_arr = copy.copy(img_arr)
@@ -203,35 +164,10 @@ class data_augmentation:
             r = np.random.uniform(low=-max_rot,high=max_rot)
             rot_img_arr[t,0,:,:] = sk.transform.rotate(img_arr[t,0,:,:],r,preserve_range=True).astype("int32")
             rot_seg = (sk.transform.rotate(seg_arr[t,:,:]==1,r)>0.5).astype("int8")
-            rot_border = sk.transform.rotate(seg_arr[t,:,:]==2,r)>0.5
-            rot_seg[rot_border] = 2
+#             rot_border = sk.transform.rotate(seg_arr[t,:,:]==2,r)>0.5
+#             rot_seg[rot_border] = 2
             rot_seg_arr[t,:,:] = rot_seg
         return rot_img_arr,rot_seg_arr
-    
-#     def rotate(img_arr,seg_arr):
-#         rot_img_arr = copy.copy(img_arr)
-#         rot_seg_arr = copy.copy(seg_arr)
-#         for t in range(img_arr.shape[2]):
-#             r = np.random.normal(loc=0,scale=60)
-#             rot_img_arr[:,:,t] = sk.transform.rotate(img_arr[:,:,t],r,preserve_range=True).astype("uint16")
-#             rot_seg_arr[:,:,t] = sk.transform.rotate(seg_arr[:,:,t],r).astype(bool)
-#         return rot_img_arr,rot_seg_arr
-
-#     def deform_img_arr(self,img_arr,seg_arr):
-#         y_steps = np.linspace(0.,4.,num=img_arr.shape[0])
-#         x_steps = np.linspace(0.,4.,num=img_arr.shape[1])
-#         grid = np.random.normal(scale=10.,size=(2,4,4))
-#         dx = RectBivariateSpline(np.arange(4),np.arange(4),grid[0]).ev(y_steps[np.newaxis,:],x_steps[:,np.newaxis])
-#         dy = RectBivariateSpline(np.arange(4),np.arange(4),grid[1]).ev(y_steps[np.newaxis,:],x_steps[:,np.newaxis])
-#         y,x = np.meshgrid(np.arange(img_arr.shape[0]), np.arange(img_arr.shape[1]), indexing='ij')
-#         indices = np.reshape(y+dy, (-1, 1)), np.reshape(x+dx, (-1, 1))
-#         def_img_arr = copy.copy(img_arr)
-#         def_seg_arr = copy.copy(seg_arr)
-#         for t in range(img_arr.shape[2]):
-#             def_img_arr[:,:,t] = map_coordinates(img_arr[:,:,t], indices, order=1).reshape(img_arr.shape[:2])
-#             def_seg_arr[:,:,t] = map_coordinates(seg_arr[:,:,t], indices, order=1).reshape(seg_arr.shape[:2])
-#             def_seg_arr[:,:,t] = sk.morphology.binary_closing(def_seg_arr[:,:,t])
-#         return def_img_arr,def_seg_arr
 
     def deform_img_arr(self,img_arr,seg_arr):
         def_img_arr = copy.copy(img_arr)
@@ -250,20 +186,13 @@ class data_augmentation:
             
             elastic_cell = (map_coordinates(seg_arr[t,:,:]==1, indices, order=1).reshape(seg_arr.shape[1:3])>0.5)
             elastic_cell = sk.morphology.binary_closing(elastic_cell)
-            elastic_border = (map_coordinates(seg_arr[t,:,:]==2, indices, order=1).reshape(seg_arr.shape[1:3])>0.5)
+#             elastic_border = (map_coordinates(seg_arr[t,:,:]==2, indices, order=1).reshape(seg_arr.shape[1:3])>0.5)
             def_seg_arr[t,elastic_cell] = 1
-            def_seg_arr[t,elastic_border] = 2
-#             elastic_seg = (map_coordinates(seg_arr[t,:,:].astype(bool), indices, order=1).reshape(seg_arr.shape[1:3])>0.5)
-            
-            
-#             elastic_seg = sk.morphology.binary_closing(elastic_seg).astype("int8")
-#             def_img_arr[t,0,:,:],def_seg_arr[t,:,:] = (elastic_img,elastic_seg)
+#             def_seg_arr[t,elastic_border] = 2
         return def_img_arr,def_seg_arr
 
     
     def get_augmented_data(self,img_arr,seg_arr):
-#         img_arr = self.make_chunked_kymograph(img_arr,chunksize=self.chunksize)
-#         seg_arr = self.make_chunked_kymograph(seg_arr,chunksize=self.chunksize)
         img_arr,seg_arr = self.random_crop(img_arr,seg_arr)
         img_arr,seg_arr = self.random_x_flip(img_arr,seg_arr,p=self.p_flip)
         img_arr,seg_arr = self.random_y_flip(img_arr,seg_arr,p=self.p_flip)
@@ -278,18 +207,12 @@ class data_augmentation:
         return img_arr,seg_arr
 
 class UNet_Training_DataLoader:
-    def __init__(self,headpath,seg_channel,num_trenches_per_fov):
-        self.headpath = headpath
-        self.kymopath = headpath + "/kymo"
-        self.segpath = headpath + "/segmentation"
-        self.nnpath = headpath + "/nn"
-        self.nnoutputpath = headpath + "/nnsegmentation"
-        self.metapath = headpath + "/metadata.hdf5"
-        self.seg_channel = seg_channel
-        self.num_trenches_per_fov = num_trenches_per_fov
+    def __init__(self,nnpath="",trainpath="",testpath="",valpath=""):
+        self.nnpath = nnpath
+        self.trainpath = trainpath
+        self.testpath = testpath
+        self.valpath = valpath
         
-#         self.data_augmentor = data_augmentation(chunksize=chunksize,p_crop=p_crop,p_flip=p_flip,p_brightness=p_brightness,p_rotate=p_rotate,p_deform=p_deform)
-    
     def writedir(self,directory,overwrite=False):
         """Creates an empty directory at the specified location. If a directory is
         already at this location, it will be overwritten if 'overwrite' is true,
@@ -308,100 +231,81 @@ class UNet_Training_DataLoader:
             if not os.path.exists(directory):
                 os.makedirs(directory)
         
-    def get_ttv_lists(self,ttv_split):
+    def get_metadata(self,headpath):
+        meta_handle = pandas_hdf5_handler(headpath + "/metadata.hdf5")
+        global_handle = meta_handle.read_df("global",read_metadata=True)
+        kymo_handle = meta_handle.read_df("kymo",read_metadata=True)
         
-        meta_handle = pandas_hdf5_handler(self.metapath)
-        kymo_handle = meta_handle.read_df("kymo")
-        fov_arr = kymo_handle.index.get_level_values('fov').unique().values
-        trench_dict = {fov:len(kymo_handle.loc[fov].index.get_level_values('trench').unique().values) for fov in fov_arr}
-        np.random.shuffle(fov_arr)
-        fov_list = list(fov_arr)
-        trench_count_arr = np.array([trench_dict[fov] for fov in fov_list])
-        trench_count_arr[trench_count_arr>self.num_trenches_per_fov] = self.num_trenches_per_fov
-        ttl_counts = np.sum(trench_count_arr)
-
-        ttv_split = np.array(ttv_split)
-        ttv_counts = (ttv_split*ttl_counts).astype(int)
-        ttv_accum = np.add.accumulate(ttv_counts)
-        trench_count_accum = np.add.accumulate(trench_count_arr)
-
-        train_mask = trench_count_accum<ttv_accum[0]
-        test_mask = ~train_mask*(trench_count_accum<ttv_accum[1])
-        val_mask = ~train_mask*~test_mask
-
-        train = list(fov_arr[train_mask])
-        test = list(fov_arr[test_mask])
-        val = list(fov_arr[val_mask])
-                
-        return train,test,val,trench_dict
+        channel_list = global_handle.metadata["channels"]
+        fov_list = kymo_handle.index.get_level_values('fov').unique().values.tolist()
+        t_len = len(kymo_handle.index.get_level_values(3).unique())
+        trench_dict = {fov:len(kymo_handle.loc[fov].index.get_level_values('trench').unique().values) for fov in fov_list}
+        shape_y = kymo_handle.metadata["kymograph_params"]["ttl_len_y"]
+        shape_x = kymo_handle.metadata["kymograph_params"]["trench_width_x"]
+        kymograph_img_shape = tuple((shape_y,shape_x))
+        return channel_list,fov_list,t_len,trench_dict,kymograph_img_shape
     
-    def merge_fovs(self,filename,fov_list,trench_dict,seg_channel):
-            
-        writepath = self.nnpath + "/" + filename
-
-        trench_count_arr = np.array([0] + [trench_dict[fov] for fov in fov_list])
-        trench_count_arr[trench_count_arr>self.num_trenches_per_fov] = self.num_trenches_per_fov
-        trench_count_accum = np.add.accumulate(trench_count_arr)
-        ttl_count = np.sum(trench_count_arr)     
+    def get_selection(self,channel,trench_dict,fov_list,t_subsample_step,t_range,max_trench_per_fov,kymograph_img_shape,selectionname):
+        fov_list = list(fov_list)
+        trench_count = np.array([min(max_trench_per_fov,trench_dict[fov]) for fov in fov_list])
+        ttl_trench_count = np.sum(trench_count)
+        num_t = len(range(t_range[0],t_range[1],t_subsample_step))
+        ttl_imgs = ttl_trench_count*num_t
+        print("Total Number of Trenches: " + str(ttl_trench_count))
+        print("Total Number of Timepoints: " + str(num_t))
+        print("Total Number of Images: " + str(ttl_imgs))
+        selection = tuple(("channel_" + channel,fov_list,t_subsample_step,t_range,max_trench_per_fov,ttl_imgs,kymograph_img_shape))
+        setattr(self, selectionname + "_selection", selection)
         
-#         num_pos = 0
-#         ttl_num = 0
-
-        with h5py.File(writepath,"w") as outfile:
-            for idx,fov in enumerate(fov_list):
-                print(fov)
-                img_path = self.kymopath + "/kymo_" + str(fov) + ".hdf5"
-                seg_path = self.segpath + "/seg_" + str(fov) + ".hdf5"
-
-                img_data = []
-                seg_data = []
-                
-                with h5py.File(img_path,"r") as imgfile:
-                    with h5py.File(seg_path,"r") as segfile:
-                        trenchids = list(imgfile.keys())
-                        shuffle(trenchids)
-                        trenchids = trenchids[:trench_count_arr[idx+1]]
-                        
-                        for i,trenchid in enumerate(trenchids):
-                            img_arr = imgfile[trenchid+"/"+seg_channel][:]
-                            seg_arr = segfile[trenchid][:]
-#                             aug_img_arr,aug_seg_arr = self.data_augmentor.get_augmented_data(img_arr,seg_arr)
-#                             num_pos += np.sum(seg_arr)
-#                             ttl_num += seg_arr.size
-                            if idx == 0 and i == 0:
-                                t_dim = img_arr.shape[2]
-                                out_shape = (ttl_count*t_dim,1,img_arr.shape[0],img_arr.shape[1])
-                                chunk_shape = (1,1,img_arr.shape[0],img_arr.shape[1])
-                                img_handle = outfile.create_dataset("img",out_shape,chunks=chunk_shape,dtype='int32')
-                                seg_handle = outfile.create_dataset("seg",out_shape,chunks=chunk_shape,dtype='int8')
-                            
-                            img_arr = np.moveaxis(img_arr[np.newaxis,:,:,:],(0,1,2,3),(1,2,3,0)) #y,x,t -> k*t,1,y,x
-                            img_arr = img_arr.astype('int32')
-                            img_handle[(trench_count_accum[idx]*t_dim)+i*t_dim:(trench_count_accum[idx]*t_dim)+(i+1)*t_dim] = img_arr
-                            
-                            seg_arr = np.moveaxis(seg_arr[np.newaxis,:,:,:],(0,1,2,3),(1,2,3,0)) #y,x,t -> k*t,1,y,x
-                            seg_arr = seg_arr.astype('int8')
-                            seg_handle[(trench_count_accum[idx]*t_dim)+i*t_dim:(trench_count_accum[idx]*t_dim)+(i+1)*t_dim] = seg_arr
-        
-#         class_arr = np.array([num_pos, ttl_num])
-#         return class_arr
-        
-                
-    def prepare_training_data(self,ttv_split):
-        
+    def inter_get_selection(self,headpath,selectionname):
+        channel_list,fov_list,t_len,trench_dict,kymograph_img_shape = self.get_metadata(headpath)
+        self.selection = interactive(self.get_selection, {"manual":True}, channel=Dropdown(options=channel_list,\
+                value=channel_list[0],description='Feature Channel:',disabled=False),\
+                trench_dict=fixed(trench_dict),fov_list=SelectMultiple(options=fov_list),\
+                t_subsample_step=IntSlider(value=1, min=1, max=50, step=1),\
+                t_range=IntRangeSlider(value=[0, t_len-1],min=0,max=t_len-1,step=1,disabled=False,continuous_update=False),\
+                max_trench_per_fov=IntText(value=1,description='Maximum Trenches per FOV: ',disabled=False),\
+                kymograph_img_shape=fixed(kymograph_img_shape),\
+                selectionname=fixed(selectionname));
+        display(self.selection)
+    
+    def export_data(self,selectionname):
         self.writedir(self.nnpath,overwrite=False)
-        train,test,val,trench_dict = self.get_ttv_lists(ttv_split)
-        self.merge_fovs("train.hdf5",train,trench_dict,self.seg_channel)
-        print("Done writing train.hdf5")
-        self.merge_fovs("test.hdf5",test,trench_dict,self.seg_channel)
-        print("Done writing test.hdf5")
-        self.merge_fovs("val.hdf5",val,trench_dict,self.seg_channel)
-        print("Done writing val.hdf5")
-#         print(ttl_classes)
-#         with open(self.nnpath + "/classfile.pkl", 'wb') as outfile:
-#             pkl.dump(ttl_classes, outfile)
-        print("Done writing data")
+        nnpath = self.nnpath + "/" + selectionname + ".hdf5"
+        selection = getattr(self,selectionname + "_selection")
+        datapath = getattr(self,selectionname + "path")
         
+        with h5py.File(nnpath,"w") as outfile:
+            out_shape = (selection[5],1,selection[6][0],selection[6][1])
+            chunk_shape = (1,1,selection[6][0],selection[6][1])
+
+            img_handle = outfile.create_dataset("img",out_shape,chunks=chunk_shape,dtype='int32')
+            seg_handle = outfile.create_dataset("seg",out_shape,chunks=chunk_shape,dtype='int8')
+            
+            img_idx = 0
+            img_step = len(range(selection[3][0],selection[3][1],selection[2]))
+            
+            for idx,fov in enumerate(selection[1]):
+                img_path = datapath + "/kymo/kymo_" + str(fov) + ".hdf5"
+                seg_path = datapath + "/segmentation/seg_" + str(fov) + ".hdf5"
+                
+                with h5py.File(img_path,"r") as imgfile, h5py.File(seg_path,"r") as segfile:
+                    trenchids = list(imgfile.keys())
+                    shuffle(trenchids)
+                    trenchids = trenchids[:selection[4]]
+                    for i,trenchid in enumerate(trenchids):
+                        img_arr = imgfile[trenchid+"/"+selection[0]][:,:,selection[3][0]:selection[3][1]:selection[2]]
+                        seg_arr = segfile[trenchid][:,:,selection[3][0]:selection[3][1]:selection[2]]
+
+                        img_arr = np.moveaxis(img_arr[np.newaxis,:,:,:],(0,1,2,3),(1,2,3,0)) #y,x,t -> k*t,1,y,x
+                        img_arr = img_arr.astype('int32')
+                        img_handle[img_idx:img_idx+img_step] = img_arr
+
+                        seg_arr = np.moveaxis(seg_arr[np.newaxis,:,:,:],(0,1,2,3),(1,2,3,0)) #y,x,t -> k*t,1,y,x
+                        seg_arr = seg_arr.astype('int8')
+                        seg_handle[img_idx:img_idx+img_step] = seg_arr
+
+                        img_idx += img_step
         
 class SegmentationDataset(Dataset):
     def __init__(self,filepath,training=False):
@@ -545,7 +449,9 @@ class UNet(nn.Module):
     
 class UNet_Trainer:
     
-    def __init__(self,headpath,layers=3,hidden_size=64,lr=0.005,momentum=0.9,weight_decay=0.0005,dropout=0.,batch_size=100,gpuon=False,saveparams=False,writetotb=False,augment=True,p_flip=0.5,max_rot=15,min_padding=20):
+    def __init__(self,headpath,layers=3,hidden_size=64,lr=0.005,momentum=0.9,weight_decay=0.0005,dropout=0.,batch_size=100,\
+                 gpuon=False,saveparams=False,writetotb=False,augment=True,p_flip=0.5,max_rot=15,min_padding=20,\
+                wm_sigma=3.,w0=10.):
         self.headpath = headpath
         self.nnpath = headpath + "/nn"
         self.nnoutputpath = headpath + "/nnsegmentation"
@@ -559,6 +465,9 @@ class UNet_Trainer:
         if augment:
             self.data_augmentor = data_augmentation(p_flip=p_flip,max_rot=max_rot,min_padding=min_padding)
         
+        self.wm_sigma = wm_sigma
+        self.w0 = w0
+        
         self.layers = layers
         self.hidden_size = hidden_size
         self.dropout = dropout
@@ -567,20 +476,12 @@ class UNet_Trainer:
         
         if writetotb:
             self.writer = SummaryWriter('runs/layers='+str(layers)+'_hidden_size='+str(hidden_size)+'_dropout='+str(dropout)+'_lr='+str(lr)+'_momentum='+str(momentum))
-            
-        self.model = UNet(1,3,layers=layers,hidden_size=hidden_size,dropout=dropout)
+#         self.model = UNet(1,2,layers=layers,hidden_size=hidden_size,dropout=dropout,withsoftmax=False)
+        self.model = UNet(1,2,layers=layers,hidden_size=hidden_size,dropout=dropout,withsoftmax=True)
         self.model.uniforminit()
         if gpuon:
             self.model = self.model.cuda()
             
-#         with open(self.nnpath + "/classfile.pkl", 'rb') as outfile:
-#             class_arr = pkl.load(outfile)
-            
-#         pos_ex = class_arr[0]
-#         neg_ex = class_arr[1] - pos_ex
-#         ratio = torch.Tensor(np.array(neg_ex/pos_ex))
-#         print(ratio)
-#         self.loss_fn = nn.BCEWithLogitsLoss(reduction='none', pos_weight=ratio)
         self.optimizer = optim.SGD(self.model.parameters(), lr = lr,momentum=momentum,weight_decay=weight_decay)
         
     def load_model(self,paramspath):
@@ -591,30 +492,57 @@ class UNet_Trainer:
             device = torch.device('cpu')
             self.model.load_state_dict(torch.load(paramspath, map_location=device))
         
-    def train(self,x,y,weights):
+    def make_weight_map(binary_mask):
+        ttl_count = binary_mask.size
+        cell_count = np.sum(binary_mask)
+        background_count = ttl_count - cell_count
+        class_weight = np.array([ttl_count/(background_count+1),ttl_count/(cell_count+1)])
+        class_weight = class_weight/np.sum(class_weight)
+
+        labeled = sk.measure.label(binary_mask)
+        labels = np.unique(labeled)[1:]
+
+        dist_maps = []
+        borders = []
+        for i in labels:
+            cell = labeled==i
+            dilated = sk.morphology.binary_dilation(cell)
+            border = dilated^cell
+            borders.append(border)
+            dist_map = sp.ndimage.morphology.distance_transform_edt(~cell)
+            dist_maps.append(dist_map)
+        dist_maps = np.array(dist_maps)
+        borders = np.array(borders)
+        borders = np.max(borders,axis=0)
+        dist_maps = np.sort(dist_maps,axis=0)
+        weight = self.w0*np.exp(-((dist_maps[0] + dist_maps[1])**2)/(2*(self.wm_sigma**2)))
+        weight[binary_mask] = class_weight[1]
+        weight[~binary_mask] += class_weight[0]
+        weight[borders] = 0.
+        return weight
+    
+    def train(self,x,y,weightmaps):
         self.optimizer.zero_grad()
         fx = self.model.forward(x)
-        nll = F.cross_entropy(fx,y,reduction='none',weight=weights)
+        fx = torch.log(fx)
+        
+        nll = F.nll_loss(fx,y,reduction='none')*weightmaps
+        
         mean_nll = torch.mean(nll)
         mean_nll.backward()
         self.optimizer.step()
         return mean_nll
 
-    def test(self,x,y,weights):
+    def test(self,x,y,weightmaps):
         fx = self.model.forward(x)
-        nll = F.cross_entropy(fx,y,reduction='none',weight=weights)
+        fx = torch.log(fx)
+        
+        nll = F.nll_loss(fx,y,reduction='none')*weightmaps
+        
         nll = torch.sum(nll)
         return nll
 
     def perepoch(self,e,train_iter,val_iter,train_data_shape,val_data_shape):
-        
-                    
-#         pos_ex = class_arr[0]
-#         neg_ex = class_arr[1] - pos_ex
-#         ratio = torch.Tensor(np.array(neg_ex/pos_ex))
-#         print(ratio)
-#         self.loss_fn = nn.BCEWithLogitsLoss(reduction='none', pos_weight=ratio)
-        
         
         print('=======epoch ' + str(e) + '=======')
         self.model.train()
@@ -622,39 +550,42 @@ class UNet_Trainer:
         for i,b in enumerate(train_iter):
             img_arr,seg_arr = (b['img'].numpy(),b['seg'].numpy())
             seg_arr = seg_arr[:,0] #dirty fix move to data prep when scratch stabalizes
-            for t in range(seg_arr.shape[0]):
-#                 border = sk.morphology.binary_dilation(seg_arr[t])^sk.morphology.binary_erosion(seg_arr[t])
-                binary = seg_arr[t].astype(bool)
-                dilated = sk.morphology.binary_dilation(binary)
-                dilated = sk.morphology.binary_dilation(dilated)
-                border = dilated^binary
-#                 inner = sk.morphology.binary_erosion(seg_arr[t])^seg_arr[t]
-#                 border = outer+inner
-                seg_arr[t,border] = 2
-
-            
-            
             if self.augment:
                 img_arr,seg_arr = self.data_augmentor.get_augmented_data(img_arr,seg_arr)
-#             else:
-#                 img_arr,seg_arr = (b['img'].numpy(),b['seg'].numpy())
-#             plt.imshow(seg_arr[0])
-#             plt.show()
+            weightmaps = []
+            for t in range(seg_arr.shape[0]):
+                binary = seg_arr[t].astype(bool)
+                weightmap = self.make_weight_map(binary)
+                weightmaps.append(weightmap)
+                
+                
+#                 binary = seg_arr[t].astype(bool)
+#                 dilated = sk.morphology.binary_dilation(binary)
+#                 dilated = sk.morphology.binary_dilation(dilated)
+#                 border = dilated^binary
+#                 inner = sk.morphology.binary_erosion(seg_arr[t])^seg_arr[t]
+#                 border = outer+inner
+#                 seg_arr[t,border] = 2
+
+#             if self.augment:
+#                 img_arr,seg_arr = self.data_augmentor.get_augmented_data(img_arr,seg_arr)
+
+#             background_count = int(np.sum(seg_arr==0))
+#             cell_count = int(np.sum(seg_arr==1))
+#             border_count = int(np.sum(seg_arr==2))
+#             ttl_count = seg_arr.size
             
-            background_count = int(np.sum(seg_arr==0))
-            cell_count = int(np.sum(seg_arr==1))
-            border_count = int(np.sum(seg_arr==2))
-            ttl_count = seg_arr.size
-            
-            weights = torch.Tensor(np.array([ttl_count/(background_count+1),ttl_count/(cell_count+1),ttl_count/(border_count+1)]))
+#             weights = torch.Tensor(np.array([ttl_count/(background_count+1),ttl_count/(cell_count+1),ttl_count/(border_count+1)]))
             
             x = torch.Tensor(img_arr)
             y = torch.LongTensor(seg_arr)
+            weightmaps = torch.Tensor(np.array(weightmaps))
             if self.gpuon:
                 x = x.cuda()
                 y = y.cuda()
-                weights = weights.cuda()
-            mean_nll = self.train(x,y,weights)
+                weightmaps = weightmaps.cuda()
+#                 weights = weights.cuda()
+            mean_nll = self.train(x,y,weightmaps)
             mean_nll = mean_nll.cpu().data.numpy()
             if self.writetotb:
                 self.writer.add_scalar('Mean Train NLL', mean_nll, i+e*num_train_batches)
@@ -665,6 +596,7 @@ class UNet_Trainer:
                            "_dropout=" + str(self.dropout) + '_lr=' + str(self.lr) + '_momentum=' + str(self.momentum) + "_epoch_" + str(e) + "_step_" + str(i) +".pt")
             del x
             del y
+            del weightmaps
             del mean_nll
             torch.cuda.empty_cache()
         self.model.eval()
@@ -672,31 +604,39 @@ class UNet_Trainer:
         for i,b in enumerate(val_iter):
             img_arr,seg_arr = (b['img'].numpy(),b['seg'].numpy())
             seg_arr = seg_arr[:,0]
+            weightmaps = []
             for t in range(seg_arr.shape[0]):
-#                 border = sk.morphology.binary_dilation(seg_arr[t])^sk.morphology.binary_erosion(seg_arr[t])
                 binary = seg_arr[t].astype(bool)
-                dilated = sk.morphology.binary_dilation(binary)
-                dilated = sk.morphology.binary_dilation(dilated)
-                border = dilated^binary
-                seg_arr[t,border] = 2
+                weightmap = self.make_weight_map(binary)
+                weightmaps.append(weightmap)
+#             for t in range(seg_arr.shape[0]):
+#                 border = sk.morphology.binary_dilation(seg_arr[t])^sk.morphology.binary_erosion(seg_arr[t])
+#                 binary = seg_arr[t].astype(bool)
+#                 dilated = sk.morphology.binary_dilation(binary)
+#                 dilated = sk.morphology.binary_dilation(dilated)
+#                 border = dilated^binary
+#                 seg_arr[t,border] = 2
             
-            background_count = int(np.sum(seg_arr==0))
-            cell_count = int(np.sum(seg_arr==1))
-            border_count = int(np.sum(seg_arr==2))
-            ttl_count = seg_arr.size
+#             background_count = int(np.sum(seg_arr==0))
+#             cell_count = int(np.sum(seg_arr==1))
+#             border_count = int(np.sum(seg_arr==2))
+#             ttl_count = seg_arr.size
             
-            weights = torch.Tensor(np.array([ttl_count/(background_count+1),ttl_count/(cell_count+1),ttl_count/(border_count+1)]))
+#             weights = torch.Tensor(np.array([ttl_count/(background_count+1),ttl_count/(cell_count+1),ttl_count/(border_count+1)]))
 
             x = torch.Tensor(img_arr)
             y = torch.LongTensor(seg_arr)
+            weightmaps = torch.Tensor(np.array(weightmaps))
             if self.gpuon:
                 x = x.cuda()
                 y = y.cuda()
-                weights = weights.cuda()
-            nll = self.test(x,y,weights)
+                weightmaps = weightmaps.cuda()
+#                 weights = weights.cuda()
+            nll = self.test(x,y,weightmaps)
             total_test_nll += nll.cpu().data.numpy()
             del x
             del y
+            del weightmaps
             del nll
             torch.cuda.empty_cache()
         avgtestnll = total_test_nll/(np.prod(np.array(val_data_shape)))
