@@ -2,6 +2,7 @@ import os
 import h5py
 import torch
 import copy
+import ipywidgets as ipyw
 
 from random import shuffle
 from tensorboardX import SummaryWriter
@@ -11,7 +12,6 @@ from sklearn.metrics import precision_recall_curve
 from scipy.ndimage.interpolation import map_coordinates
 from scipy.interpolate import RectBivariateSpline
 from scipy import interpolate,ndimage
-from ipywidgets import interact, interactive, fixed, interact_manual, FloatSlider, IntSlider, Dropdown, IntText, SelectMultiple, IntRangeSlider
 
 import skimage as sk
 import pickle as pkl
@@ -21,8 +21,6 @@ import torch.nn.functional as F
 import torch.optim as optim
 import numpy as np
 from .utils import pandas_hdf5_handler,kymo_handle
-
-#y,x,t -> k*t,1,y,x
 
 from matplotlib import pyplot as plt
 
@@ -259,14 +257,14 @@ class UNet_Training_DataLoader:
         
     def inter_get_selection(self,headpath,selectionname):
         channel_list,fov_list,t_len,trench_dict,kymograph_img_shape = self.get_metadata(headpath)
-        self.selection = interactive(self.get_selection, {"manual":True}, channel=Dropdown(options=channel_list,\
+        self.selection = ipyw.interactive(self.get_selection, {"manual":True}, channel=ipyw.Dropdown(options=channel_list,\
                 value=channel_list[0],description='Feature Channel:',disabled=False),\
-                trench_dict=fixed(trench_dict),fov_list=SelectMultiple(options=fov_list),\
-                t_subsample_step=IntSlider(value=1, min=1, max=50, step=1),\
-                t_range=IntRangeSlider(value=[0, t_len-1],min=0,max=t_len-1,step=1,disabled=False,continuous_update=False),\
-                max_trench_per_fov=IntText(value=1,description='Maximum Trenches per FOV: ',disabled=False),\
-                kymograph_img_shape=fixed(kymograph_img_shape),\
-                selectionname=fixed(selectionname));
+                trench_dict=ipyw.fixed(trench_dict),fov_list=ipyw.SelectMultiple(options=fov_list),\
+                t_subsample_step=ipyw.IntSlider(value=1, min=1, max=50, step=1),\
+                t_range=ipyw.IntRangeSlider(value=[0, t_len-1],min=0,max=t_len-1,step=1,disabled=False,continuous_update=False),\
+                max_trench_per_fov=ipyw.IntText(value=1,description='Maximum Trenches per FOV: ',disabled=False),\
+                kymograph_img_shape=ipyw.fixed(kymograph_img_shape),\
+                selectionname=ipyw.fixed(selectionname));
         display(self.selection)
     
     def export_data(self,selectionname):

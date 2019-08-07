@@ -68,14 +68,12 @@ class dask_controller: #adapted from Charles' code
 
     def retry_failed(self):
         self.failed_fovs = [fov for fov,future in self.futures.items() if future.status != 'finished']
-        self.daskclient.restart()
-        time.sleep(5)
+        out = self.daskclient.restart()
         self.mapfovs(self.function,self.failed_fovs,retries=self.retries)
         
     def retry_processing(self):
         self.proc_fovs = [fov for fov,future in self.futures.items() if future.status == 'pending']
-        self.daskclient.restart()
-        time.sleep(5)
+        out = self.daskclient.restart()
         self.mapfovs(self.function,self.proc_fovs,retries=self.retries)
         
 class hdf5lock:
@@ -83,21 +81,23 @@ class hdf5lock:
         self.filepath = filepath
         self.lockfile = filepath[:-4] + "lock"
         self.updateperiod = updateperiod
+        
     def _lock(self):
         while True:
             if not os.path.exists(self.lockfile):
                 open(self.lockfile,'w').close()
                 break
             sleep(self.updateperiod)
+            
     def _apply_fn(self,function,iomode,*args,**kwargs):
         try:
-            with h5py.File(self.filepath,iomode) as input_file:
-                fn_output = function(input_file,*args,**kwargs)
+            fn_output = function(self.filepath,iomode,*args,**kwargs)
             os.remove(self.lockfile)
             return fn_output
         except:
             os.remove(self.lockfile)
             raise
+            
     def lockedfn(self,function,iomode,*args,**kwargs):
         self._lock()
         fn_output = self._apply_fn(function,iomode,*args,**kwargs)

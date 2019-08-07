@@ -12,10 +12,7 @@ from .segment import fluo_segmentation
 from .utils import kymo_handle,pandas_hdf5_handler
 
 class kymograph_interactive(kymograph_multifov):
-    def __init__(self,headpath,trench_len_y=270,padding_y=20,trench_width_x=30,y_percentile=85,y_min_edge_dist=50,smoothing_kernel_y=(9,1),\
-                 triangle_nbins=50,triangle_scaling=1.,orientation_detection=0,expected_num_rows=None,orientation_on_fail=None,\
-                 x_percentile=85,background_kernel_x=(301,1),smoothing_kernel_x=(9,1),\
-                 otsu_nbins=50,otsu_scaling=1.,trench_present_thr=0.):
+    def __init__(self,headpath):
         """The kymograph class is used to generate and visualize kymographs. The central function of this
         class is the method 'generate_kymograph', which takes an hdf5 file of images from a single fov and
         outputs an hdf5 file containing kymographs from all detected trenches.
@@ -23,68 +20,36 @@ class kymograph_interactive(kymograph_multifov):
         NOTE: I need to revisit the row detection, must ensure there can be no overlap...
             
         Args:
-            input_file_prefix (string): File prefix for all input hdf5 files of the form
-            [input_file_prefix][number].hdf5 
-            all_channels (list): list of strings corresponding to the different image channels
-            available in the input hdf5 file, with the channel used for segmenting trenches in
-            the first position. NOTE: these names must match those of the input hdf5 file datasets.
-            trench_len_y (int): Length from the end of the tenches to be used when cropping in the 
-            y-dimension.
-            padding_y (int): Padding to be used when cropping in the y-dimension.
-            trench_width_x (int): Width to be used when cropping in the x-dimension.
-            fov_list (list): List of ints corresponding to fovs of interest.
 
-            t_subsample_step(int): Step size to be used for subsampling input files in time.
-
-            y_percentile (int): Used for reducing signal in xyt to only the yt dimension when cropping
-            in the y-dimension.
-            y_min_edge_dist (int): Used when detecting present rows, filters for a minimum row size along the y dimension.
-            smoothing_kernel_y (tuple): Two-entry tuple specifying a kernel size for smoothing out yt
-            signal when cropping in the y-dimension.
-            triangle_nbins (int): Number of bins to use when applying the triangle method to y-dimension signal.
-            triangle_scaling (float): Threshold scaling factor for triangle method thresholding.
-
-            x_percentile (int): Used for reducing signal in xyt to only the xt dimension when cropping
-            in the x-dimension.
-            background_kernel_x (tuple): Two-entry tuple specifying a kernel size for performing background subtraction
-            on xt signal when cropping in the x-dimension. Dim_1 (time) should be set to 1.
-            smoothing_kernel_x (tuple): Two-entry tuple specifying a kernel size for performing smoothing
-            on xt signal when cropping in the x-dimension. Dim_1 (time) should be set to 1.
-            otsu_nbins (int): Number of bins to use when applying Otsu's method to x-dimension signal.
-            otsu_scaling (float): Threshold scaling factor for Otsu's method thresholding.
         """
         #break all_channels,fov_list,t_subsample_step=t_subsample_step
-        super(kymograph_interactive, self).__init__(headpath,trench_len_y=trench_len_y,\
-            padding_y=padding_y,trench_width_x=trench_width_x,y_percentile=y_percentile,\
-            y_min_edge_dist=y_min_edge_dist,smoothing_kernel_y=smoothing_kernel_y,triangle_nbins=triangle_nbins,\
-            triangle_scaling=triangle_scaling,orientation_detection=orientation_detection,expected_num_rows=expected_num_rows,\
-            orientation_on_fail=orientation_on_fail,x_percentile=x_percentile,background_kernel_x=background_kernel_x,\
-            smoothing_kernel_x=smoothing_kernel_x,otsu_nbins=otsu_nbins,otsu_scaling=otsu_scaling,trench_present_thr=trench_present_thr)
+        super(kymograph_interactive, self).__init__(headpath)
         
         self.final_params = {}
         
-    def get_image_params(self,fov_idx):
-        hdf5_handle = h5py.File(self.input_file_prefix + str(fov_idx) + ".hdf5", "a")
-        channels = list(hdf5_handle.keys())
-        data = hdf5_handle[channels[0]]
-        
-        meta_handle = pandas_hdf5_handler(self.metapath)
-        df_in = meta_handle.read_df("global",read_metadata=True)
-        fov_list = df_in.metadata['fields_of_view']
-        timepoints_len = len(df_in.metadata['frames'])
-        
-        return channels,data.shape,fov_list,timepoints_len
+    def get_image_params(self):
+        channels = self.metadata["channels"]
+        fov_list = self.metadata["fields_of_view"]
+        timepoints_len = self.metadata["num_frames"]
+        return channels,fov_list,timepoints_len
         
     def view_image(self,fov_idx,t,channel):
-        hdf5_handle = h5py.File(self.input_file_prefix + str(fov_idx) + ".hdf5", "a")
-        plt.imshow(hdf5_handle[channel][:,:,t])
-        hdf5_handle.close()    
+        img_entry = self.metadf.loc[fov_idx,t]
+        file_idx = int(img_entry["File Index"])
+        img_idx = int(img_entry["Image Index"])
+        
+        with h5py.File(self.headpath + "/hdf5/hdf5_" + str(file_idx) + ".hdf5", "r") as infile:
+            img_arr = infile[channel][img_idx,:,:]
+        plt.imshow(img_arr)
 
     def preview_y_precentiles(self,imported_array_list, y_percentile, smoothing_kernel_y_dim_0,\
                           triangle_nbins,triangle_scaling):
         
         self.final_params['Y Percentile'] = y_percentile
         self.final_params['Y Smoothing Kernel'] = smoothing_kernel_y_dim_0
+        self.final_params['Triangle Threshold Bins'] = triangle_nbins
+        self.final_params['Triangle Threshold Scaling'] = triangle_scaling
+        
         y_percentiles_smoothed_list = self.map_to_fovs(self.get_smoothed_y_percentiles,imported_array_list,\
                                                        y_percentile,(smoothing_kernel_y_dim_0,1))
         thresholds = [self.triangle_threshold(y_percentiles_smoothed,triangle_nbins,triangle_scaling)[1] for y_percentiles_smoothed in y_percentiles_smoothed_list]
@@ -140,18 +105,18 @@ class kymograph_interactive(kymograph_multifov):
             
         plt.show()
         
+    def preview_y_crop(self,y_percentiles_smoothed_list, imported_array_list,y_min_edge_dist, padding_y,\
+                       trench_len_y,vertical_spacing,expected_num_rows,orientation_detection,orientation_on_fail):
         
-    def preview_y_crop(self,y_percentiles_smoothed_list, imported_array_list, triangle_nbins, triangle_scaling,\
-                       y_min_edge_dist, padding_y, trench_len_y,vertical_spacing,expected_num_rows,orientation_detection,orientation_on_fail):
-        
-        self.final_params['Triangle Trheshold Bins'] = triangle_nbins
-        self.final_params['Triangle Threshold Scaling'] = triangle_scaling
         self.final_params['Minimum Trench Length'] = y_min_edge_dist
         self.final_params['Y Padding'] = padding_y
         self.final_params['Trench Length'] = trench_len_y
         self.final_params['Orientation Detection Method'] = orientation_detection
         self.final_params['Expected Number of Rows (Manual Orientation Detection)'] = expected_num_rows
         self.final_params['Top Orientation when Row Drifts Out (Manual Orientation Detection)'] = orientation_on_fail
+        
+        triangle_nbins = self.final_params['Triangle Threshold Bins']
+        triangle_scaling = self.final_params['Triangle Threshold Scaling']
         
         trench_edges_y_lists = self.map_to_fovs(self.get_trench_edges_y,y_percentiles_smoothed_list,triangle_nbins,\
                                                triangle_scaling,y_min_edge_dist)
@@ -208,6 +173,8 @@ class kymograph_interactive(kymograph_multifov):
         self.final_params['X Percentile'] = x_percentile
         self.final_params['X Background Kernel'] = background_kernel_x
         self.final_params['X Smoothing Kernel'] = smoothing_kernel_x
+        self.final_params['Otsu Threshold Bins'] = otsu_nbins
+        self.final_params['Otsu Threshold Scaling'] = otsu_scaling
         
         smoothed_x_percentiles_list = self.map_to_fovs(self.get_smoothed_x_percentiles,cropped_in_y_list,x_percentile,\
                                                          (background_kernel_x,1),(smoothing_kernel_x,1))
@@ -244,14 +211,32 @@ class kymograph_interactive(kymograph_multifov):
         plt.show()
     
     
-    def preview_midpoints(self,smoothed_x_percentiles_list,otsu_nbins,otsu_scaling,vertical_spacing):
-        self.final_params['Otsu Trheshold Bins'] = otsu_nbins
-        self.final_params['Otsu Threshold Scaling'] = otsu_scaling
+    def preview_midpoints(self,smoothed_x_percentiles_list,vertical_spacing):
+        otsu_nbins = self.final_params['Otsu Threshold Bins']
+        otsu_scaling = self.final_params['Otsu Threshold Scaling']
         
         all_midpoints_list = self.map_to_fovs(self.get_all_midpoints,smoothed_x_percentiles_list,otsu_nbins,otsu_scaling)
         self.plot_midpoints(all_midpoints_list,self.fov_list,vertical_spacing)
         x_drift_list = self.map_to_fovs(self.get_x_drift,all_midpoints_list)
         return all_midpoints_list,x_drift_list
+        
+#     def preview_corrected_midpoints(self,all_midpoints_list,x_drift_list,trench_width_x,trench_present_thr,vertical_spacing):
+#         self.final_params['Trench Width'] = trench_width_x
+#         self.final_params['Trench Presence Threshold'] = trench_present_thr
+        
+#         corrected_midpoints_list = self.map_to_fovs(self.get_corrected_midpoints,all_midpoints_list,x_drift_list,trench_width_x,trench_present_thr)
+#         self.plot_midpoints(corrected_midpoints_list,self.fov_list,vertical_spacing)
+                                                         
+    def preview_kymographs(self,cropped_in_y_list,all_midpoints_list,x_drift_list,trench_width_x,trench_present_thr,vertical_spacing):
+        self.final_params['Trench Width'] = trench_width_x
+        self.final_params['Trench Presence Threshold'] = trench_present_thr
+        
+        cropped_in_x_list = self.map_to_fovs(self.get_crop_in_x,cropped_in_y_list,all_midpoints_list,x_drift_list,\
+                                             trench_width_x,trench_present_thr)
+        corrected_midpoints_list = self.map_to_fovs(self.get_corrected_midpoints,all_midpoints_list,x_drift_list,trench_width_x,trench_present_thr)
+        
+        self.plot_kymographs(cropped_in_x_list,self.fov_list,vertical_spacing)
+        self.plot_midpoints(corrected_midpoints_list,self.fov_list,vertical_spacing)
         
     def plot_midpoints(self,all_midpoints_list,fov_list,vertical_spacing):
         fig = plt.figure()
@@ -274,23 +259,6 @@ class kymograph_interactive(kymograph_multifov):
         plt.tight_layout()
         plt.subplots_adjust(top=vertical_spacing)
         plt.show()
-        
-    def preview_corrected_midpoints(self,all_midpoints_list,x_drift_list,trench_width_x,trench_present_thr,vertical_spacing):
-        self.final_params['Trench Width'] = trench_width_x
-        self.final_params['Trench Presence Threshold'] = trench_present_thr
-        
-        corrected_midpoints_list = self.map_to_fovs(self.get_corrected_midpoints,all_midpoints_list,x_drift_list,trench_width_x,trench_present_thr)
-        self.plot_midpoints(corrected_midpoints_list,self.fov_list,vertical_spacing)
-        
-        return corrected_midpoints_list
-                                                 
-    def preview_kymographs(self,cropped_in_y_list,all_midpoints_list,x_drift_list,trench_width_x,trench_present_thr,vertical_spacing):
-        self.final_params['Trench Width'] = trench_width_x
-        self.final_params['Trench Presence Threshold'] = trench_present_thr
-        
-        cropped_in_x_list = self.map_to_fovs(self.get_crop_in_x,cropped_in_y_list,all_midpoints_list,x_drift_list,\
-                                             trench_width_x,trench_present_thr)
-        self.plot_kymographs(cropped_in_x_list,self.fov_list,vertical_spacing)
     
     def plot_kymographs(self,cropped_in_x_list,fov_list,vertical_spacing,num_rows=2):
         plt.figure()
@@ -351,7 +319,7 @@ class fluo_segmentation_interactive(fluo_segmentation):
         
         meta_handle = pandas_hdf5_handler(self.metapath)
         df_in = meta_handle.read_df("global",read_metadata=True)
-        self.all_channels = ["channel_" + channel for channel in df_in.metadata['channels']]
+        self.all_channels = df_in.metadata['channels']
         df_in = meta_handle.read_df("kymo")
         timepoint_num = len(df_in.index.get_level_values(3).unique().tolist())
         self.t_range = (0,timepoint_num)

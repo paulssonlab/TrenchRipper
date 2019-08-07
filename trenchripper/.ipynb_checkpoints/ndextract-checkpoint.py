@@ -12,19 +12,13 @@ from tifffile import imsave
 from .utils import pandas_hdf5_handler
 
 class hdf5_fov_extractor:
-    def __init__(self,nd2filename,headpath,chunk_shape=(2048,2048,1)): #note this chunk size has a large role in downstream steps...make sure is less than 1 MB
+    def __init__(self,nd2filename,headpath,tpts_per_file=100): #note this chunk size has a large role in downstream steps...make sure is less than 1 MB
         self.nd2filename = nd2filename
         self.headpath = headpath
-        self.hdf5path = headpath + "/hdf5"
-        self.chunk_shape = chunk_shape
-        chunk_bytes = (2*np.multiply.accumulate(np.array(chunk_shape))[-1])
-        self.chunk_cache_mem_size = 2*chunk_bytes
+        self.metapath = self.headpath + "/metadata.hdf5"
+        self.hdf5path = self.headpath + "/hdf5"
+        self.tpts_per_file = tpts_per_file
         
-        self.writedir(self.hdf5path)
-        
-        meta_handle = nd_metadata_handler(self.nd2filename)
-        self.exp_metadata,self.fov_metadata = meta_handle.get_metadata()
-            
     def writedir(self,directory,overwrite=False):
         if overwrite:
             if os.path.exists(directory):
@@ -33,26 +27,84 @@ class hdf5_fov_extractor:
         else:
             if not os.path.exists(directory):
                 os.makedirs(directory)
+                
+    def assignidx(self,metadf):
+        outdf = copy.deepcopy(metadf)
+        ttllen = len(metadf)
+        numfovs = len(metadf.index.get_level_values("fov").unique())
+        timepoints_per_fov = len(metadf.index.get_level_values("timepoints").unique())
+        files_per_fov = (timepoints_per_fov//self.tpts_per_file) + 1
+        remainder = timepoints_per_fov%self.tpts_per_file
+        ttlfiles = numfovs*files_per_fov
+        
+        fov_file_idx = np.repeat(list(range(files_per_fov)), self.tpts_per_file)[:-(self.tpts_per_file-remainder)]
+        file_idx = np.concatenate([fov_file_idx+(fov_idx*files_per_fov) for fov_idx in range(numfovs)])
+        
+        fov_img_idx = np.repeat(np.array(list(range(self.tpts_per_file)))[np.newaxis,:],files_per_fov,axis=0)
+        fov_img_idx = fov_img_idx.flatten()[:-(self.tpts_per_file-remainder)]
+        img_idx = np.concatenate([fov_img_idx for fov_idx in range(numfovs)])
+        outdf["File Index"] = file_idx
+        outdf["Image Index"] = img_idx
+        return outdf
     
     def writemetadata(self):
-        meta_handle = pandas_hdf5_handler(self.headpath + "/metadata.hdf5")
-        meta_handle.write_df("global",self.fov_metadata,metadata=self.exp_metadata)
+        ndmeta_handle = nd_metadata_handler(self.nd2filename)
+        exp_metadata,fov_metadata = ndmeta_handle.get_metadata()
         
-    def extract_fov(self,fovnum):
-        nd2file = ND2Reader(self.nd2filename)
-        num_fovs = len(nd2file.metadata["fields_of_view"])
+        self.chunk_shape = (1,exp_metadata["height"],exp_metadata["width"])
+        chunk_bytes = (2*np.multiply.accumulate(np.array(self.chunk_shape))[-1])
+        self.chunk_cache_mem_size = 2*chunk_bytes
         
-        with h5py_cache.File(self.hdf5path + "/fov_" + str(fovnum) + ".hdf5","w",chunk_cache_mem_size=self.chunk_cache_mem_size) as h5pyfile:
-            for i,channel in enumerate(nd2file.metadata["channels"]):
-                y_dim = nd2file.metadata['height']
-                x_dim = nd2file.metadata['width']
-                t_dim = len(nd2file.metadata['frames'])
-                hdf5_dataset = h5pyfile.create_dataset("channel_" + str(channel),\
-                                (x_dim,y_dim,t_dim), chunks=self.chunk_shape, dtype='uint16')
-                for frame in range(len(nd2file.metadata['frames'])):
-                    nd2_image = nd2file.get_frame_2D(c=i, t=frame, v=fovnum)
-                    hdf5_dataset[:,:,int(frame)] = nd2_image
-        nd2file.close()
+        exp_metadata["chunk_shape"],exp_metadata["chunk_cache_mem_size"] = (self.chunk_shape,self.chunk_cache_mem_size)
+        self.meta_handle = pandas_hdf5_handler(self.metapath)
+        
+        assignment_metadata = self.assignidx(fov_metadata)
+        assignment_metadata.astype({"t":float,"x": float,"y":float,"z":float,"File Index":int,"Image Index":int})
+        
+        self.meta_handle.write_df("global",assignment_metadata,metadata=exp_metadata)
+
+    def extract(self,dask_controller):
+        self.writedir(self.hdf5path,overwrite=True)
+        self.writemetadata()
+        
+        dask_controller.futures = {}
+        metadf = self.meta_handle.read_df("global",read_metadata=True)
+        self.metadata = metadf.metadata
+        metadf = metadf.reset_index(inplace=False)
+        metadf = metadf.set_index(["File Index","Image Index"], drop=True, append=False, inplace=False)
+        metadf = metadf.sort_index()
+        
+        def writehdf5(fovnum,num_entries,timepoint_list,file_idx):
+            with ND2Reader(self.nd2filename) as nd2file:
+                y_dim = self.metadata['height']
+                x_dim = self.metadata['width']
+                with h5py_cache.File(self.hdf5path + "/hdf5_" + str(file_idx) + ".hdf5","w",chunk_cache_mem_size=self.chunk_cache_mem_size) as h5pyfile:
+                    for i,channel in enumerate(self.metadata["channels"]):
+                        hdf5_dataset = h5pyfile.create_dataset(str(channel),\
+                        (num_entries,y_dim,x_dim), chunks=self.chunk_shape, dtype='uint16')
+
+                        for j in range(len(timepoint_list)):
+                            frame = timepoint_list[j]
+#                             frame = dataframe[j:j+1]["timepoints"].values[0]
+    #                         frame = self.metadf['frames'][timepoint] #not sure if this is necessary...
+                            nd2_image = nd2file.get_frame_2D(c=i, t=frame, v=fovnum)
+                            hdf5_dataset[j,:,:] = nd2_image
+            return "Done."
+        
+        file_list = metadf.index.get_level_values("File Index").unique().values
+        num_jobs = len(file_list)
+        random_priorities = np.random.uniform(size=(num_jobs,))
+
+        for k,file_idx in enumerate(file_list):
+            priority = random_priorities[k]
+            filedf = metadf.loc[file_idx]
+            
+            fovnum = filedf[0:1]["fov"].values[0]
+            num_entries = len(filedf.index.get_level_values("Image Index").values)
+            timepoint_list = filedf["timepoints"].tolist()
+                                    
+            future = dask_controller.daskclient.submit(writehdf5,fovnum,num_entries,timepoint_list,file_idx,retries=1,priority=priority)
+            dask_controller.futures["extract file: " + str(file_idx)] = future
 
 class tiff_fov_extractor: ###needs some work
     def __init__(self,nd2filename,tiffpath):
