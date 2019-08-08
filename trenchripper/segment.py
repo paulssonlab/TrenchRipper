@@ -233,18 +233,10 @@ class fluo_segmentation_cluster(fluo_segmentation):
 
         self.headpath = headpath
         self.seg_channel = seg_channel
-        self.input_path = headpath + "/kymo"
-        self.output_path = headpath + "/segmentation"
+        self.kymographpath = headpath + "/kymograph"
+        self.fluorsegmentationpath = headpath + "/fluorsegmentation"
         self.metapath = headpath + "/metadata.hdf5"
-        
-    def removefile(self,filepath):
-        """Removes a file at the specified path, if it exists.
-        
-        Args:
-            filepath (str): Path to file for deletion.
-        """
-        if os.path.exists(filepath):
-            os.remove(filepath)
+        self.meta_handle = pandas_hdf5_handler(self.metapath)
 
     def writedir(self,directory,overwrite=False):
         """Creates an empty directory at the specified location. If a directory is
@@ -263,60 +255,35 @@ class fluo_segmentation_cluster(fluo_segmentation):
         else:
             if not os.path.exists(directory):
                 os.makedirs(directory)
-    
-    def init_fov_number(self,fov_number):
-        self.fov_number = fov_number
-        self.input_file_path = self.input_path+"/kymo_"+str(self.fov_number)+".hdf5"
-        self.output_file_path = self.output_path+"/seg_"+str(self.fov_number)+".hdf5"
 
-    def generate_segmentation(self,fov_number):
-
-        self.init_fov_number(fov_number)
-        self.writedir(self.output_path,overwrite=False)
-        self.removefile(self.output_file_path)
-        
-        with h5py.File(self.input_file_path,"r") as input_file:
-            for trenchid in input_file.keys():
-                trench_array = input_file[trenchid+"/"+self.seg_channel][:]
-                trench_array = self.segment(trench_array)
-                with h5py.File(self.output_file_path, "a") as h5pyfile:
-                    hdf5_dataset = h5pyfile.create_dataset(str(trenchid), data=trench_array, dtype=bool)
+    def generate_segmentation(self,file_idx):
+        with h5py.File(self.fluorsegmentationpath + "/segmentation_" + str(file_idx) + ".hdf5", "w") as h5pyfile:
+            with h5py.File(self.kymographpath + "/kymograph_" + str(file_idx) + ".hdf5","r") as input_file:
+                input_data = input_file[self.seg_channel]
+                trench_output = []
+                for trench_idx in range(input_data.shape[0]):
+                    trench_array = input_data[trench_idx]
+                    trench_array = self.segment(trench_array)
+                    trench_output.append(trench_array[np.newaxis])
+                    del trench_array
+            trench_output = np.concatenate(trench_output,axis=0)
+            hdf5_dataset = h5pyfile.create_dataset("data", data=trench_output, dtype=bool)
             return "Done"
-        
-    def get_trench_arr(self,input_file,trenchid):
-        trench_array = input_file[str(trenchid)+"/"+self.seg_channel][:]
-        return trench_array
-    
-    def write_trench_arr(self,output_file,trenchid,trench_array):
-        if str(trenchid) in output_file:
-            output_file[str(trenchid)][...] = trench_array
-        else:
-            hdf5_dataset = output_file.create_dataset(str(trenchid), data=trench_array, dtype=bool)
-            
-    def dask_segment(self,dask_controller,fov_list=None):
-        self.writedir(self.output_path,overwrite=True)
-        
-        if fov_list == None:
-            meta_handle = pandas_hdf5_handler(self.metapath)
-            df_in = meta_handle.read_df("kymo")
-            fov_list = df_in.index.get_level_values(0).unique().tolist()
-        trenchid_dict = {fov: df_in.loc[fov]["trenchid"].unique().tolist() for fov in fov_list}
+
+    def dask_segment(self,dask_controller):
+        self.writedir(self.fluorsegmentationpath,overwrite=True)
         dask_controller.futures = {}
         
-        def seg(fov,trenchid):
-            input_file_path = self.input_path+"/kymo_"+str(fov)+".hdf5"
-            input_lock = hdf5lock(input_file_path,updateperiod=0.1)
-            output_file_path = self.output_path+"/seg_"+str(fov)+".hdf5"
-            output_lock = hdf5lock(output_file_path,updateperiod=0.1)
-                        
-            trench_array = input_lock.lockedfn(self.get_trench_arr,"r",trenchid)
-            trench_array = self.segment(trench_array)
-            output_lock.lockedfn(self.write_trench_arr,"a",trenchid,trench_array)
+        kymodf = self.meta_handle.read_df("kymograph",read_metadata=True)
+        file_list = kymodf["File Index"].unique().tolist()
+        num_file_jobs = len(file_list)
+        
+        random_priorities = np.random.uniform(size=(num_file_jobs,))
+        for k,file_idx in enumerate(file_list):
+            priority = random_priorities[k]
             
-        for fov in fov_list:
-            for trenchid in trenchid_dict[fov]:
-                future = dask_controller.daskclient.submit(seg,fov,trenchid,retries=2)
-                dask_controller.futures["generate_segmentation: " + str(fov) + "," + str(trenchid)] = future
+            future = dask_controller.daskclient.submit(self.generate_segmentation,file_idx,retries=1,priority=priority)
+            dask_controller.futures["Segmentation: " + str(file_idx)] = future
 
 class phase_segmentation:
     def __init__(self,smooth_sigma=0.75,wrap_pad=0,hess_pad=4,min_obj_size=30,global_otsu_scaling=1.,\
