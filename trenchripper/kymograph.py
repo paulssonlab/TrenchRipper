@@ -992,14 +992,9 @@ class kymograph_cluster:
         output_file_path = self.kymographpath+"/kymograph_"+str(k)+".hdf5"
         with h5py.File(output_file_path,"w") as outfile:
             for channel in self.all_channels:
-                print(k)
-                print(k*trenches_per_file)
                 trenchids = trenchid_list[k*self.trenches_per_file:(k+1)*self.trenches_per_file]
                 working_trenchdf = trenchiddf.loc[trenchids]
                 fov_list = working_trenchdf["fov"].unique().tolist()
-                print(trenchids)
-                print(fov_list)
-
                 trench_arr_fovs = []
                 for fov in fov_list:
                     working_fovdf = working_trenchdf[working_trenchdf["fov"]==fov]
@@ -1025,9 +1020,15 @@ class kymograph_cluster:
                     trench_arr_fovs.append(trench_arr_files)
                 trench_arr_fovs = np.concatenate(trench_arr_fovs,axis=0) # k x t x y x x
                 hdf5_dataset = outfile.create_dataset(str(channel), data=trench_arr_fovs, dtype="uint16")
+                
+    def cleanup_kymographs(self,reorg_futures,file_list):
+        for file_idx in file_list:
+            proc_file_path = self.kymographpath+"/kymograph_processed_"+str(file_idx)+".hdf5"
+            os.remove(proc_file_path)
 
     def reorg_all_kymographs(self,dask_controller):
         fovdf = self.meta_handle.read_df("temp_kymograph",read_metadata=True)
+        file_list = fovdf["File Index"].unique().tolist()
         metadata = fovdf.metadata
         trenchiddf = fovdf.reset_index(inplace=False)
         trenchiddf = trenchiddf.set_index(["trenchid","timepoints"], drop=True, append=False, inplace=False)
@@ -1051,6 +1052,10 @@ class kymograph_cluster:
             priority = random_priorities[k]
             future = dask_controller.daskclient.submit(self.reorg_kymograph,k,retries=1,priority=priority)
             dask_controller.futures["Kymograph Reorganized: " + str(k)] = future
+            
+        reorg_futures = [dask_controller.futures["Kymograph Reorganized: " + str(k)] for k in range(num_files)]
+        future = dask_controller.daskclient.submit(self.cleanup_kymographs,reorg_futures,file_list,retries=1,priority=priority)
+        dask_controller.futures["Kymographs Cleaned Up"] = future
 
     def post_process(self,dask_controller):
         self.collect_metadata(dask_controller)
