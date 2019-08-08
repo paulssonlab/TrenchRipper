@@ -49,11 +49,10 @@ class fluo_segmentation:
 
         cell_threshold_kymo = []
         for t in range(t_tot):
-            cell_threshold = sk.filters.threshold_otsu(wrap_img[:,:,t])*global_otsu_scaling
-            cell_thr_arr = cell_threshold*np.ones(wrap_img[:,:,t].shape,dtype='uint8')
+            cell_threshold = sk.filters.threshold_otsu(wrap_img[t,:,:])*global_otsu_scaling
+            cell_thr_arr = cell_threshold*np.ones(wrap_img[t,:,:].shape,dtype='uint8')
             cell_threshold_kymo.append(cell_thr_arr)
         cell_threshold_kymo = np.array(cell_threshold_kymo)
-        cell_threshold_kymo = np.moveaxis(cell_threshold_kymo,(0,1,2),(2,0,1))
 
         thr_kymo = kymo_handle()
         thr_kymo.import_wrap(cell_threshold_kymo)
@@ -171,7 +170,7 @@ class fluo_segmentation:
     def segment(self,img_arr):
         input_kymo = kymo_handle()
         input_kymo.import_wrap(img_arr,scale=self.scale_timepoints,scale_perc=self.scaling_percentage)
-        t_tot = input_kymo.kymo_arr.shape[-1]
+        t_tot = input_kymo.kymo_arr.shape[0]
 
         working_img = self.preprocess_img(input_kymo.return_unwrap(padding=self.wrap_pad),sigma=self.smooth_sigma)
         del input_kymo
@@ -179,7 +178,7 @@ class fluo_segmentation:
         inverted = sk.util.invert(working_img)
         min_eigvals = self.to_8bit(self.hessian_contrast_enc(inverted,self.hess_pad))
         del inverted
-        
+                
         cell_mask = self.cell_region_mask(working_img,method=self.cell_mask_method,global_otsu_scaling=self.global_otsu_scaling,cell_otsu_scaling=self.cell_otsu_scaling,t_tot=t_tot,local_otsu_r=self.local_otsu_r)
 
         eig_kymo = kymo_handle()
@@ -201,7 +200,7 @@ class fluo_segmentation:
         output_kymo.import_unwrap(final_mask,t_tot,padding=self.wrap_pad)
         segmented = output_kymo.return_wrap()
         return segmented
-    
+
 class fluo_segmentation_cluster(fluo_segmentation):
     def __init__(self,headpath,paramfile=True,seg_channel="",scale_timepoints=False,scaling_percentage=0.9,smooth_sigma=0.75,wrap_pad=0,\
                  hess_pad=4,min_obj_size=30,cell_mask_method='local',global_otsu_scaling=1.,cell_otsu_scaling=1.,local_otsu_r=15,\

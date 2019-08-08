@@ -14,7 +14,7 @@ from .cluster import hdf5lock
 from .utils import multifov,pandas_hdf5_handler
 
 class kymograph_cluster:
-    def __init__(self,headpath="",paramfile=False,all_channels=[""],trench_len_y=270,padding_y=20,trench_width_x=30,\
+    def __init__(self,headpath="",trenches_per_file=20,paramfile=False,all_channels=[""],trench_len_y=270,padding_y=20,trench_width_x=30,\
                  t_range=(0,None),y_percentile=85,y_min_edge_dist=50,smoothing_kernel_y=(1,9),triangle_nbins=50,triangle_scaling=1.,\
                  top_orientation=0,expected_num_rows=None,orientation_on_fail=None,x_percentile=85,background_kernel_x=(1,21),smoothing_kernel_x=(1,9),\
                  otsu_nbins=50,otsu_scaling=1.,trench_present_thr=0.):
@@ -51,6 +51,7 @@ class kymograph_cluster:
         self.seg_channel = self.all_channels[0]
         self.metapath = self.headpath + "/metadata.hdf5"
         self.meta_handle = pandas_hdf5_handler(self.metapath)
+        self.trenches_per_file = trenches_per_file
 
         self.t_range = t_range
 
@@ -978,47 +979,78 @@ class kymograph_cluster:
                 
         meta_out_handle = pandas_hdf5_handler(self.metapath)
         kymograph_metadata = {"attempted_fov_list":fov_list,"successful_fov_list":successful_fovs,"failed_fov_list":failed_fovs,"kymograph_params":self.kymograph_params}
-        meta_out_handle.write_df("kymograph",df_out,metadata=kymograph_metadata)
+        meta_out_handle.write_df("temp_kymograph",df_out,metadata=kymograph_metadata)
 
-    def reorg_kymograph(self,file_idx):
-        fovdf = self.meta_handle.read_df("kymograph",read_metadata=False)
-        filedf = fovdf.reset_index(inplace=False)
-        filedf = filedf.set_index(["File Index","Image Index"], drop=True, append=False, inplace=False)
-        filedf = filedf.sort_index()
-        working_filedf = filedf.loc[file_idx]
+    def reorg_kymograph(self,k):
+        fovdf = self.meta_handle.read_df("temp_kymograph",read_metadata=True)
+        metadata = fovdf.metadata
+        trenchiddf = fovdf.reset_index(inplace=False)
+        trenchiddf = trenchiddf.set_index(["trenchid","timepoints"], drop=True, append=False, inplace=False)
+        trenchiddf = trenchiddf.sort_index()
+        trenchid_list = trenchiddf.index.get_level_values("trenchid").unique().tolist()
 
-        row_list = working_filedf["row"].unique().tolist()
-        proc_file_path = self.kymographpath+"/kymograph_processed_"+str(file_idx)+".hdf5"
-        output_file_path = self.kymographpath+"/kymograph_"+str(file_idx)+".hdf5"
+        output_file_path = self.kymographpath+"/kymograph_"+str(k)+".hdf5"
+        with h5py.File(output_file_path,"w") as outfile:
+            for channel in self.all_channels:
+                print(k)
+                print(k*trenches_per_file)
+                trenchids = trenchid_list[k*self.trenches_per_file:(k+1)*self.trenches_per_file]
+                working_trenchdf = trenchiddf.loc[trenchids]
+                fov_list = working_trenchdf["fov"].unique().tolist()
+                print(trenchids)
+                print(fov_list)
 
-        with h5py.File(proc_file_path,"r") as infile:
-            with h5py.File(output_file_path,"w") as outfile:
-                for row in row_list:
-                    hdf5row = infile[str(row)]
-                    channel_keys = list(hdf5row.keys())
-                    row_handle = working_filedf[working_filedf["row"]==row]
-                    trench_list = row_handle['trench'].unique().tolist()
-                    for trench in trench_list:
-                        trenchid = row_handle[row_handle['trench']==trench][0:1]["trenchid"].values[0]
-                        for channel in channel_keys:
-                            kymo_arr = hdf5row[channel][trench]
-                            hdf5_dataset = outfile.create_dataset(str(trenchid)+"/"+str(channel), data=kymo_arr, dtype="uint16")
-        os.remove(proc_file_path)
-        return None
-    
+                trench_arr_fovs = []
+                for fov in fov_list:
+                    working_fovdf = working_trenchdf[working_trenchdf["fov"]==fov]
+                    file_list = working_fovdf["File Index"].unique().tolist()
+
+                    trench_arr_files = []
+                    for file_idx in file_list:
+                        proc_file_path = self.kymographpath+"/kymograph_processed_"+str(file_idx)+".hdf5"
+                        with h5py.File(proc_file_path,"r") as infile:
+                            working_filedf = working_fovdf[working_fovdf["File Index"]==file_idx]
+                            row_list = working_filedf["row"].unique().tolist()
+
+                            trench_arr_rows = []
+                            for row in row_list:
+                                working_rowdf = working_filedf[working_filedf["row"]==row]
+                                trenches = working_rowdf["trench"].unique().tolist()
+                                first_trench_idx,last_trench_idx = (trenches[0],trenches[-1])
+                                kymo_arr = infile[str(row) + "/" + channel][first_trench_idx:(last_trench_idx+1)]
+                                trench_arr_rows.append(kymo_arr)
+                        trench_arr_rows = np.concatenate(trench_arr_rows,axis=0) # k x t x y x x
+                        trench_arr_files.append(trench_arr_rows)
+                    trench_arr_files = np.concatenate(trench_arr_files,axis=1) # k x t x y x x
+                    trench_arr_fovs.append(trench_arr_files)
+                trench_arr_fovs = np.concatenate(trench_arr_fovs,axis=0) # k x t x y x x
+                hdf5_dataset = outfile.create_dataset(str(channel), data=trench_arr_fovs, dtype="uint16")
+
     def reorg_all_kymographs(self,dask_controller):
-        fovdf = self.meta_handle.read_df("kymograph",read_metadata=False)
-        filedf = fovdf.reset_index(inplace=False)
-        filedf = filedf.set_index(["File Index","Image Index"], drop=True, append=False, inplace=False)
-        filedf = filedf.sort_index()
-        file_list = filedf.index.get_level_values("File Index").unique().values
-        num_file_jobs = len(file_list)
-                    
-        random_priorities = np.random.uniform(size=(num_file_jobs,))
-        for k,file_idx in enumerate(file_list):
+        fovdf = self.meta_handle.read_df("temp_kymograph",read_metadata=True)
+        metadata = fovdf.metadata
+        trenchiddf = fovdf.reset_index(inplace=False)
+        trenchiddf = trenchiddf.set_index(["trenchid","timepoints"], drop=True, append=False, inplace=False)
+        trenchiddf = trenchiddf.sort_index()
+        trenchid_list = trenchiddf.index.get_level_values("trenchid").unique().tolist()
+
+        outputdf = trenchiddf.drop(columns = ["File Index","Image Index"])
+        num_tpts = len(outputdf.index.get_level_values("timepoints").unique().tolist())
+        chunk_size = self.trenches_per_file*num_tpts
+        num_files = (len(trenchid_list)//self.trenches_per_file) + 1
+
+        file_indices = np.repeat(np.array(range(num_files)),chunk_size)[:len(outputdf)]
+        file_trenchid = np.repeat(np.array(range(self.trenches_per_file)),num_tpts)
+        file_trenchid = np.repeat(file_trenchid[:,np.newaxis],num_files,axis=1).T.flatten()[:len(outputdf)]
+        outputdf["File Index"] = file_indices
+        outputdf["File Trench Index"] = file_trenchid
+        fovdf = self.meta_handle.write_df("kymograph",outputdf,metadata=metadata)
+
+        random_priorities = np.random.uniform(size=(num_files,))
+        for k in range(0,num_files):
             priority = random_priorities[k]
-            future = dask_controller.daskclient.submit(self.reorg_kymograph,file_idx,retries=1,priority=priority)
-            dask_controller.futures["Kymograph Reorganized: " + str(file_idx)] = future
+            future = dask_controller.daskclient.submit(self.reorg_kymograph,k,retries=1,priority=priority)
+            dask_controller.futures["Kymograph Reorganized: " + str(k)] = future
 
     def post_process(self,dask_controller):
         self.collect_metadata(dask_controller)
