@@ -301,7 +301,7 @@ class kymograph_interactive(kymograph_multifov):
     def write_param_file(self):
         with open(self.headpath + "/kymograph.par", "wb") as outfile:
             pickle.dump(self.final_params, outfile)
-
+            
 class fluo_segmentation_interactive(fluo_segmentation):
     def __init__(self,headpath,smooth_sigma=0.75,wrap_pad=0,hess_pad=4,min_obj_size=30,cell_mask_method='local',\
                  global_otsu_scaling=1.,cell_otsu_scaling=1.,local_otsu_r=15,edge_threshold_scaling=1.,threshold_step_perc=0.1,\
@@ -313,16 +313,16 @@ class fluo_segmentation_interactive(fluo_segmentation):
                                    threshold_perc_num_steps=threshold_perc_num_steps,convex_threshold=convex_threshold)
 
         self.headpath = headpath
-        self.input_path = headpath + "/kymo"
-        self.input_file_prefix = self.input_path + "/kymo_"
+        self.kymographpath = headpath + "/kymograph"
         self.metapath = headpath + "/metadata.hdf5"
+        self.meta_handle = pandas_hdf5_handler(self.metapath)
+        self.kymodf = self.meta_handle.read_df("kymograph",read_metadata=True)
+        globaldf = self.meta_handle.read_df("global",read_metadata=True)
+        self.all_channels = globaldf.metadata['channels']
         
-        meta_handle = pandas_hdf5_handler(self.metapath)
-        df_in = meta_handle.read_df("global",read_metadata=True)
-        self.all_channels = df_in.metadata['channels']
-        df_in = meta_handle.read_df("kymo")
-        timepoint_num = len(df_in.index.get_level_values(3).unique().tolist())
+        timepoint_num = len(self.kymodf.index.get_level_values("timepoints").unique().tolist())
         self.t_range = (0,timepoint_num)
+        self.trenchid_arr = self.kymodf.index.get_level_values("trenchid").unique().values
         
         self.final_params = {}
         
@@ -330,37 +330,46 @@ class fluo_segmentation_interactive(fluo_segmentation):
         self.seg_channel = seg_channel
         
     def plot_img_list(self,img_list):
-        nrow = (len(img_list)+1)//2
-        fig, axes = plt.subplots(nrows=nrow, ncols=2, figsize=self.fig_size)
+        nrow = ((len(img_list)-1)//self.img_per_row)+1
+        fig, axes = plt.subplots(nrows=nrow, ncols=self.img_per_row, figsize=self.fig_size)
         for i in range(len(img_list)):
             img = img_list[i]
             if nrow < 2:
-                axes[i%2].imshow(img)
+                axes[i%self.img_per_row].imshow(img)
             else:
-                axes[i//2,i%2].imshow(img)
-        if len(img_list)%2 == 1:
-            if nrow < 2:
-                axes[-1].axis('off')
-            else: 
-                axes[-1, -1].axis('off')
+                axes[i//self.img_per_row,i%self.img_per_row].imshow(img)
+        extra_slots = self.img_per_row - (len(img_list)%self.img_per_row)
+        if extra_slots != 0:
+            for slot in range(1,extra_slots+1):
+                if nrow < 2:
+                    axes[self.img_per_row-slot].axis('off')
+                else: 
+                    axes[-1, self.img_per_row-slot].axis('off')
         plt.tight_layout()
         plt.show()         
         
-    def import_array(self,fov_idx,n_trenches,t_range=(0,None),t_subsample_step=1,fig_size_y=9,fig_size_x=6):
+        
+    def import_array(self,n_trenches,t_range=(0,None),t_subsample_step=1,fig_size_y=9,fig_size_x=6,img_per_row=2):
         self.fig_size = (fig_size_y,fig_size_x)
-        with h5py.File(self.input_file_prefix + str(fov_idx) + ".hdf5", "r") as hdf5_handle:
-            ttl_trenches = len(hdf5_handle.keys())
-            chosen_trenches = np.random.choice(np.array(list(range(0,ttl_trenches))),size=n_trenches,replace=False)
-            chosen_trench_keys = np.array(list(hdf5_handle.keys()))[chosen_trenches].tolist()
-            if t_range[1] == None:
-                array_list = [hdf5_handle[trench_key + "/" + self.seg_channel][:,:,t_range[0]::t_subsample_step] for trench_key in chosen_trench_keys]
-            else:
-                array_list = [hdf5_handle[trench_key + "/" + self.seg_channel][:,:,t_range[0]:t_range[1]+1:t_subsample_step] for trench_key in chosen_trench_keys]
-            output_array = np.concatenate(np.expand_dims(array_list,axis=0),axis=0)
-            self.t_tot = output_array.shape[3]
+        self.img_per_row = img_per_row
+        
+        rand_trench_arr = np.random.choice(self.trenchid_arr,size=(n_trenches,),replace=False)
+        selecteddf = self.kymodf.loc[list(zip(rand_trench_arr,np.zeros(len(rand_trench_arr)).astype(int)))]
+        selectedlist = list(zip(selecteddf["File Index"].tolist(),selecteddf["File Trench Index"].tolist()))
+        
+        array_list = []
+        for item in selectedlist:
+            with h5py.File(self.kymographpath + "/kymograph_" + str(item[0]) + ".hdf5", "r") as hdf5_handle:
+                if t_range[1] == None:
+                    array = hdf5_handle[self.seg_channel][item[1],t_range[0]::t_subsample_step]
+                else:
+                    array = hdf5_handle[self.seg_channel][item[1],t_range[0]:t_range[1]+1:t_subsample_step]
+            array_list.append(array)
+        output_array = np.concatenate(np.expand_dims(array_list,axis=0),axis=0)
+        self.t_tot = output_array.shape[1]
         self.plot_kymographs(output_array)
         return output_array
-    
+
     def plot_kymographs(self,kymo_arr):
         input_kymo = kymo_handle()
         img_list = []

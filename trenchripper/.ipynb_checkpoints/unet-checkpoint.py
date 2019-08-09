@@ -205,11 +205,12 @@ class data_augmentation:
         return img_arr,seg_arr
 
 class UNet_Training_DataLoader:
-    def __init__(self,nnpath="",trainpath="",testpath="",valpath=""):
-        self.nnpath = nnpath
+    def __init__(self,nndatapath="",trainpath="",testpath="",valpath=""):
+        self.nndatapath = nndatapath
         self.trainpath = trainpath
         self.testpath = testpath
         self.valpath = valpath
+        self.metapath = self.nndatapath + "/metadata.hdf5"
         
     def writedir(self,directory,overwrite=False):
         """Creates an empty directory at the specified location. If a directory is
@@ -232,18 +233,21 @@ class UNet_Training_DataLoader:
     def get_metadata(self,headpath):
         meta_handle = pandas_hdf5_handler(headpath + "/metadata.hdf5")
         global_handle = meta_handle.read_df("global",read_metadata=True)
-        kymo_handle = meta_handle.read_df("kymo",read_metadata=True)
+        kymo_handle = meta_handle.read_df("kymograph",read_metadata=True)
+        fovdf = kymo_handle.reset_index(inplace=False)
+        fovdf = fovdf.set_index(["fov","row","trench"], drop=True, append=False, inplace=False)
+        fovdf = fovdf.sort_index()
         
         channel_list = global_handle.metadata["channels"]
-        fov_list = kymo_handle.index.get_level_values('fov').unique().values.tolist()
-        t_len = len(kymo_handle.index.get_level_values(3).unique())
-        trench_dict = {fov:len(kymo_handle.loc[fov].index.get_level_values('trench').unique().values) for fov in fov_list}
+        fov_list = kymo_handle['fov'].unique().tolist()
+        t_len = len(kymo_handle.index.get_level_values("timepoints").unique())
+        trench_dict = {fov:len(fovdf.loc[fov]["trenchid"].unique()) for fov in fov_list}
         shape_y = kymo_handle.metadata["kymograph_params"]["ttl_len_y"]
         shape_x = kymo_handle.metadata["kymograph_params"]["trench_width_x"]
         kymograph_img_shape = tuple((shape_y,shape_x))
         return channel_list,fov_list,t_len,trench_dict,kymograph_img_shape
     
-    def get_selection(self,channel,trench_dict,fov_list,t_subsample_step,t_range,max_trench_per_fov,kymograph_img_shape,selectionname):
+    def get_selection(self,channel,trench_dict,fov_list,t_subsample_step,t_range,max_trench_per_fov,kymograph_img_shape,selectionname):        
         fov_list = list(fov_list)
         trench_count = np.array([min(max_trench_per_fov,trench_dict[fov]) for fov in fov_list])
         ttl_trench_count = np.sum(trench_count)
@@ -252,13 +256,12 @@ class UNet_Training_DataLoader:
         print("Total Number of Trenches: " + str(ttl_trench_count))
         print("Total Number of Timepoints: " + str(num_t))
         print("Total Number of Images: " + str(ttl_imgs))
-        selection = tuple(("channel_" + channel,fov_list,t_subsample_step,t_range,max_trench_per_fov,ttl_imgs,kymograph_img_shape))
+        selection = tuple((channel,fov_list,t_subsample_step,t_range,max_trench_per_fov,ttl_imgs,kymograph_img_shape))
         setattr(self, selectionname + "_selection", selection)
         
     def inter_get_selection(self,headpath,selectionname):
         channel_list,fov_list,t_len,trench_dict,kymograph_img_shape = self.get_metadata(headpath)
-        self.selection = ipyw.interactive(self.get_selection, {"manual":True}, channel=ipyw.Dropdown(options=channel_list,\
-                value=channel_list[0],description='Feature Channel:',disabled=False),\
+        self.selection = ipyw.interactive(self.get_selection, {"manual":True}, channel=ipyw.Dropdown(options=channel_list,value=channel_list[0],description='Feature Channel:',disabled=False),\
                 trench_dict=ipyw.fixed(trench_dict),fov_list=ipyw.SelectMultiple(options=fov_list),\
                 t_subsample_step=ipyw.IntSlider(value=1, min=1, max=50, step=1),\
                 t_range=ipyw.IntRangeSlider(value=[0, t_len-1],min=0,max=t_len-1,step=1,disabled=False,continuous_update=False),\
@@ -268,12 +271,22 @@ class UNet_Training_DataLoader:
         display(self.selection)
     
     def export_data(self,selectionname):
-        self.writedir(self.nnpath,overwrite=False)
-        nnpath = self.nnpath + "/" + selectionname + ".hdf5"
+        self.writedir(self.nndatapath,overwrite=False)
         selection = getattr(self,selectionname + "_selection")
         datapath = getattr(self,selectionname + "path")
+        input_meta_handle = pandas_hdf5_handler(datapath + "/metadata.hdf5")
+        output_meta_handle = pandas_hdf5_handler(self.metapath)
+        nndatapath = self.nndatapath + "/" + selectionname + ".hdf5"
         
-        with h5py.File(nnpath,"w") as outfile:
+        kymodf = input_meta_handle.read_df("kymograph",read_metadata=True)
+        fovdf = kymodf.reset_index(inplace=False)
+        fovdf = fovdf.set_index(["fov","row","trench"], drop=True, append=False, inplace=False)
+        fovdf = fovdf.sort_index()
+        
+        fovdf["fov"] = fovdf.index.get_level_values("fov")
+        trenchdf_list = []
+        
+        with h5py.File(nndatapath,"w") as outfile:
             out_shape = (selection[5],1,selection[6][0],selection[6][1])
             chunk_shape = (1,1,selection[6][0],selection[6][1])
 
@@ -283,27 +296,55 @@ class UNet_Training_DataLoader:
             img_idx = 0
             img_step = len(range(selection[3][0],selection[3][1],selection[2]))
             
+            fov_list = []
             for idx,fov in enumerate(selection[1]):
-                img_path = datapath + "/kymo/kymo_" + str(fov) + ".hdf5"
-                seg_path = datapath + "/segmentation/seg_" + str(fov) + ".hdf5"
+                working_fovdf = fovdf.loc[fov]
+                trenches = working_fovdf.index.unique().tolist()
+                shuffle(trenches)
+                trenches = trenches[:selection[4]]
                 
-                with h5py.File(img_path,"r") as imgfile, h5py.File(seg_path,"r") as segfile:
-                    trenchids = list(imgfile.keys())
-                    shuffle(trenchids)
-                    trenchids = trenchids[:selection[4]]
-                    for i,trenchid in enumerate(trenchids):
-                        img_arr = imgfile[trenchid+"/"+selection[0]][:,:,selection[3][0]:selection[3][1]:selection[2]]
-                        seg_arr = segfile[trenchid][:,:,selection[3][0]:selection[3][1]:selection[2]]
-
-                        img_arr = np.moveaxis(img_arr[np.newaxis,:,:,:],(0,1,2,3),(1,2,3,0)) #y,x,t -> k*t,1,y,x
-                        img_arr = img_arr.astype('int32')
-                        img_handle[img_idx:img_idx+img_step] = img_arr
-
-                        seg_arr = np.moveaxis(seg_arr[np.newaxis,:,:,:],(0,1,2,3),(1,2,3,0)) #y,x,t -> k*t,1,y,x
-                        seg_arr = seg_arr.astype('int8')
-                        seg_handle[img_idx:img_idx+img_step] = seg_arr
-
-                        img_idx += img_step
+                for trench in trenches:
+                    working_trenchdf = working_fovdf.loc[trench[0],trench[1]]
+                    file_idx = working_trenchdf["File Index"].values[0]
+                    file_trench_idx = working_trenchdf["File Trench Index"].values[0]
+                    
+                    img_path = datapath + "/kymograph/kymograph_" + str(file_idx) + ".hdf5"
+                    seg_path = datapath + "/fluorsegmentation/segmentation_" + str(file_idx) + ".hdf5"
+                    
+                    with h5py.File(img_path,"r") as imgfile:
+                        with h5py.File(seg_path,"r") as segfile:
+                            img_arr = imgfile[selection[0]][file_trench_idx,selection[3][0]:selection[3][1]:selection[2]]
+                            seg_arr = segfile["data"][file_trench_idx,selection[3][0]:selection[3][1]:selection[2]]
+                            
+                            img_arr = img_arr[:,np.newaxis,:,:] #t,y,x -> t,1,y,x
+                            img_arr = img_arr.astype('int32')
+                            img_handle[img_idx:img_idx+img_step] = img_arr
+                            
+                            seg_arr = seg_arr[:,np.newaxis,:,:]
+                            seg_arr = seg_arr.astype('int8')
+                            seg_handle[img_idx:img_idx+img_step] = seg_arr
+                            
+                            img_idx += img_step
+                    trenchdf_list.append(working_trenchdf)
+        outputdf = pd.concat(trenchdf_list)
+        outputdf = outputdf.reset_index(inplace=False)
+        outputdf = outputdf.set_index(["fov","trench"], drop=True, append=False, inplace=False)
+        outputdf = outputdf.sort_index()
+                
+        output_metadata = {"nndataset" : selection}
+        
+        segparampath = datapath + "/fluorescent_segmentation.par"
+        with open(segparampath, 'rb') as infile:
+            seg_param_dict = pkl.load(infile)
+        
+        output_metadata["segmentation"] = seg_param_dict
+        
+        input_meta_handle = pandas_hdf5_handler(datapath + "/metadata.hdf5")
+        for item in ["global","kymograph"]:
+            indf = input_meta_handle.read_df(item,read_metadata=True)
+            output_metadata[item] = indf.metadata
+        
+        output_meta_handle.write_df(selectionname,outputdf,metadata=output_metadata)
         
 class SegmentationDataset(Dataset):
     def __init__(self,filepath,training=False):
