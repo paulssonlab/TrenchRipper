@@ -79,7 +79,7 @@ class dask_controller: #adapted from Charles' code
 class hdf5lock:
     def __init__(self,filepath,updateperiod=0.1):
         self.filepath = filepath
-        self.lockfile = filepath[:-4] + "lock"
+        self.lockfile = filepath + ".lock"
         self.updateperiod = updateperiod
         
     def _lock(self):

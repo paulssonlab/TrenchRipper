@@ -5,6 +5,8 @@ import copy
 import ipywidgets as ipyw
 import scipy
 import pandas as pd
+import datetime
+import time
 
 
 from random import shuffle
@@ -22,7 +24,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 import numpy as np
-from trenchripper.utils import pandas_hdf5_handler,kymo_handle
+from .utils import pandas_hdf5_handler,kymo_handle
+from .cluster import hdf5lock
 
 from matplotlib import pyplot as plt
 
@@ -280,6 +283,11 @@ class UNet_Training_DataLoader:
         self.trainpath = trainpath
         self.testpath = testpath
         self.valpath = valpath
+        
+        self.trainname = self.trainpath.split("/")[-1]
+        self.testname = self.testpath.split("/")[-1]
+        self.valname = self.valpath.split("/")[-1]
+        
         self.metapath = self.nndatapath + "/metadata.hdf5"
         self.weightmap_generator = weightmap_generator(self.nndatapath,w0,wm_sigma)
         self.data_augmentation = data_augmentation()
@@ -346,6 +354,8 @@ class UNet_Training_DataLoader:
         self.writedir(self.nndatapath,overwrite=False)
         selection = getattr(self,selectionname + "_selection")
         datapath = getattr(self,selectionname + "path")
+        dataname = getattr(self,selectionname + "name")
+        
         input_meta_handle = pandas_hdf5_handler(datapath + "/metadata.hdf5")
         output_meta_handle = pandas_hdf5_handler(self.metapath)
         nndatapath = self.nndatapath + "/" + selectionname + ".hdf5"
@@ -406,6 +416,7 @@ class UNet_Training_DataLoader:
         selection_keys = ["channel", "fov_list", "t_subsample_step", "t_range", "max_trench_per_fov", "ttl_imgs", "kymograph_img_shape"]
         selection = {selection_keys[i]:item for i,item in enumerate(selection)}
         selection["experiment_name"] = self.experimentname
+        selection["data_name"] = dataname
                           
         output_metadata = {"nndataset" : selection}
         
