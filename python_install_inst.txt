@@ -9,10 +9,11 @@ conda install -c conda-forge widgetsnbextension
 jupyter lab clean
 conda install nodejs
 jupyter labextension install @jupyter-widgets/jupyterlab-manager
-conda install -c conda-forge tensorflow tensorboard
-pip install jupyter-tensorboard
-jupyter labextension install jupyterlab_tensorboard
+# conda install -c conda-forge tensorflow tensorboard
+# pip install jupyter-tensorboard
+# jupyter labextension install jupyterlab_tensorboard
 jupyter labextension install @jupyterlab/toc
+
 ## Making new conda environment
 
 conda create -n mothermachine python=3.6.8
@@ -23,3 +24,15 @@ conda install -c anaconda pytables scikit-learn seaborn line_profiler
 pip install h5py_cache nd2reader
 
 python -m ipykernel install --user --name=mothermachine
+
+
+
+
+#pip install jupyter-server-proxy
+#jupyter labextension install jupyterlab-server-proxy #try to get rid of this dependency
+# set the following in base jupyter config file...
+#c.ServerProxy.servers = {
+#  'mlflow': {
+#    'command': ['mlflow ui', '-p', '{port}']
+#  }
+#}
