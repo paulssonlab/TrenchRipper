@@ -8,11 +8,11 @@ jupyter notebook --generate-config
 conda install -c conda-forge widgetsnbextension
 jupyter lab clean
 conda install nodejs
-jupyter labextension install @jupyter-widgets/jupyterlab-manager
 # conda install -c conda-forge tensorflow tensorboard
 # pip install jupyter-tensorboard
 # jupyter labextension install jupyterlab_tensorboard
-jupyter labextension install @jupyterlab/toc
+conda install ipympl
+jupyter labextension install @jupyterlab/toc @jupyter-widgets/jupyterlab-manager jupyterlab-matplotlib
 
 ## Making new conda environment
 
