@@ -195,6 +195,9 @@ class fluo_segmentation:
         del mid_threshold_arr
 
         final_mask = (convex_scores>self.convex_threshold)
+        
+        final_mask = sk.morphology.remove_small_objects(final_mask,min_size=self.min_obj_size)
+        final_mask = sk.morphology.remove_small_holes(final_mask)
 
         output_kymo = kymo_handle()
         output_kymo.import_unwrap(final_mask,t_tot,padding=self.wrap_pad)

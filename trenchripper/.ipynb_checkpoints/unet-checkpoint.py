@@ -12,7 +12,6 @@ import qgrid
 import shutil
 import subprocess
 
-
 from random import shuffle
 from torch.autograd import Variable
 from torch.utils.data import Dataset, DataLoader
@@ -30,6 +29,7 @@ import torch.optim as optim
 import numpy as np
 from .utils import pandas_hdf5_handler,kymo_handle
 from .cluster import hdf5lock,dask_controller
+from .metrics import object_f_scores
 
 from matplotlib import pyplot as plt
 
@@ -509,7 +509,7 @@ class UNet_Training_DataLoader:
         for key,val in self.grid_dict.items():
             print(key + " " + str(val))
         
-    def export_all_data(self,n_workers=20,memory='4GB',cores=2):
+    def export_all_data(self,n_workers=20,memory='4GB'):
         self.writedir(self.nndatapath,overwrite=True)
         
         grid_keys = self.grid_dict.keys()
@@ -517,7 +517,7 @@ class UNet_Training_DataLoader:
 
         self.data_augmentation = data_augmentation()
         
-        dask_cont = dask_controller(walltime='01:00:00',local=False,n_workers=n_workers,memory=memory,cores=cores)
+        dask_cont = dask_controller(walltime='01:00:00',local=False,n_workers=n_workers,memory=memory)
         dask_cont.startdask()
         dask_cont.daskcluster.start_workers()
         dask_cont.displaydashboard()
@@ -532,6 +532,103 @@ class UNet_Training_DataLoader:
         except:
             dask_cont.shutdown()
             raise
+            
+class GridSearch:
+    def __init__(self,nndatapath,numepochs=50):
+        self.nndatapath = nndatapath
+        self.numepochs = numepochs
+        
+    def writedir(self,directory,overwrite=False):
+        """Creates an empty directory at the specified location. If a directory is
+        already at this location, it will be overwritten if 'overwrite' is true,
+        otherwise it will be left alone.
+        
+        Args:
+            directory (str): Path to directory to be overwritten/created.
+            overwrite (bool, optional): Whether to overwrite a directory that
+            already exists in this location.
+        """
+        if overwrite:
+            if os.path.exists(directory):
+                shutil.rmtree(directory)
+            os.makedirs(directory)
+        else:
+            if not os.path.exists(directory):
+                os.makedirs(directory)
+        
+    def display_grid(self):
+        meta_handle = pandas_hdf5_handler(self.nndatapath + "/metadata.hdf5")
+        trainmeta = meta_handle.read_df("train",read_metadata=True).metadata["nndataset"]
+        w0_list,wm_sigma_list = trainmeta["W0 List"],trainmeta["Wm Sigma List"]
+        
+        self.tab_dict = {'Batch Size:':[5, 10, 25],'Layers:':[2, 3, 4],\
+           'Hidden Size:':[16, 32, 64],'Learning Rate:':[0.001, 0.005, 0.01, 0.05],\
+           'Momentum:':[0.9, 0.95, 0.99],'Weight Decay:':[0.0001,0.0005, 0.001],\
+           'Dropout:':[0., 0.3, 0.5, 0.7], 'w0:':w0_list, 'wm sigma':wm_sigma_list}
+                  
+        children = [ipyw.SelectMultiple(options=val,value=(val[1],),description=key,disabled=False) for key,val in self.tab_dict.items()]
+        self.tab = ipyw.Tab()
+        self.tab.children = children
+        for i,key in enumerate(self.tab_dict.keys()):
+            self.tab.set_title(i, key[:-1])
+        return self.tab
+    
+    def get_grid_params(self):
+        self.grid_dict = {child.description:child.value for child in self.tab.children}
+        print("======== Grid Params ========")
+        for key,val in self.grid_dict.items():
+            print(key + " " + str(val))
+            
+    def generate_pyscript(self,run_idx,grid_params):
+        import_line = "import trenchripper as tr"
+        trainer_line = "nntrainer = tr.unet.UNet_Trainer(\"" + self.nndatapath + "\"," + str(run_idx) + \
+        ",gpuon=True,numepochs=" + str(self.numepochs) + ",batch_size=" + str(grid_params[0])+",layers=" + \
+        str(grid_params[1])+",hidden_size=" + str(grid_params[2]) + ",lr=" + str(grid_params[3]) + \
+        ",momentum=" + str(grid_params[4]) + ",weight_decay=" + str(grid_params[5])+",dropout="+str(grid_params[6]) + \
+        ",w0=" + str(grid_params[7]) + ",wm_sigma=" + str(grid_params[8]) + ")"
+        train_line = "nntrainer.train_model()"
+        pyscript = "\n".join([import_line,trainer_line,train_line])
+        with open(self.nndatapath + "/models/scripts/" + str(run_idx) + ".py", "w") as scriptfile:
+            scriptfile.write(pyscript)
+    
+    def generate_sbatchscript(self,run_idx,hours,cores,mem):
+        shebang = "#!/bin/bash"
+        core_line = "#SBATCH -c " + str(cores)
+        hour_line = "#SBATCH -t " + str(hours) + ":00:00"
+        gpu_lines = "#SBATCH -p gpu\n#SBATCH --gres=gpu:1"
+        mem_line = "#SBATCH --mem=" + mem
+        report_lines = "#SBATCH -o " + self.nndatapath + "/models/scripts/" + str(run_idx) +\
+        ".out\n#SBATCH -e " + self.nndatapath + "/models/scripts/" + str(run_idx) + ".err\n"
+        
+        run_line = "python -u " + self.nndatapath + "/models/scripts/" + str(run_idx) + ".py"
+        
+        sbatchscript = "\n".join([shebang,core_line,hour_line,gpu_lines,mem_line,report_lines,run_line])
+        with open(self.nndatapath + "/models/scripts/" + str(run_idx) + ".sh", "w") as scriptfile:
+            scriptfile.write(sbatchscript)
+    
+    def run_sbatchscript(self,run_idx):
+        cmd = ["sbatch",self.nndatapath + "/models/scripts/" + str(run_idx) + ".sh"]
+        subprocess.run(cmd)
+
+    def run_grid_search(self,hours=12,cores=2,mem="8G"):
+        
+        grid_keys = self.grid_dict.keys()
+        grid_combinations = list(itertools.product(*list(self.grid_dict.values())))
+        self.writedir(self.nndatapath + "/models",overwrite=True)
+        self.writedir(self.nndatapath + "/models/scripts",overwrite=True)
+        
+        self.run_indices = []
+        
+        for run_idx,grid_params in enumerate(grid_combinations):
+            self.generate_pyscript(run_idx,grid_params)
+            self.generate_sbatchscript(run_idx,hours,cores,mem)
+            self.run_sbatchscript(run_idx)
+            self.run_indices.append(run_idx)
+            
+    def cancel_all_runs(self,username):
+        for run_idx in self.run_indices:
+            cmd = ["scancel","-p","gpu","--user=" + username]
+            subprocess.Popen(cmd,shell=True,stdin=None,stdout=None,stderr=None,close_fds=True)
 
 class SegmentationDataset(Dataset):
     def __init__(self,filepath,weightchannel="",training=False):
@@ -852,18 +949,34 @@ class UNet_Trainer:
             if self.gpuon:
                 x = x.cuda()
             fx = self.model.forward(x).detach().cpu().numpy()
-            y_true.append(y.flatten())
-            y_scores.append(fx[:,1].flatten())
+#             y_true.append(y.flatten())
+#             y_scores.append(fx[:,1].flatten())
+            
+            y_true.append(y[:,0])
+            y_scores.append(fx[:,1])
+            
             del x
             del y
             torch.cuda.empty_cache()
-        y_true = np.concatenate(y_true)
-        y_scores = np.concatenate(y_scores)
-        precisions, recalls, thresholds = precision_recall_curve(y_true, y_scores)        
+            
+        y_true = np.concatenate(y_true,axis=0)
+        y_scores = np.concatenate(y_scores,axis=0)
+        precisions, recalls, thresholds = precision_recall_curve(y_true.flatten(), y_scores.flatten())        
         fscores = 2*((precisions*recalls)/(precisions+recalls))
         best_idx = np.nanargmax(fscores)
         precision, recall, fscore, threshold = (precisions[best_idx], recalls[best_idx], fscores[best_idx], thresholds[best_idx])
-        return precision, recall, fscore, threshold
+        
+        y_true = y_true.astype(bool)
+        y_pred = y_scores>threshold
+        
+        all_f_scores = []
+        for i in range(y_true.shape[0]):
+            _,_,f_score = object_f_scores(y_true[i],y_pred[i])
+            all_f_scores += f_score.tolist()
+        all_f_scores = np.array(all_f_scores)
+        all_f_scores = all_f_scores[~np.isnan(all_f_scores)]
+        
+        return precision, recall, fscore, threshold, all_f_scores
     
     def train_model(self):
         timestamp = datetime.datetime.now()
@@ -890,8 +1003,8 @@ class UNet_Trainer:
         time_elapsed = (end-start)/60.
         torch.save(self.model.state_dict(), self.nndatapath + "/models/" + str(self.model_number) + ".pt")
         
-        val_p, val_r, val_f, val_t = self.get_fscore(val_iter,val_data_shape)
-        test_p, test_r, test_f, test_t = self.get_fscore(test_iter,test_data_shape)
+        val_p, val_r, val_f, val_t, all_val_f = self.get_fscore(val_iter,val_data_shape)
+        test_p, test_r, test_f, test_t, all_test_f = self.get_fscore(test_iter,test_data_shape)
                 
         meta_handle = pandas_hdf5_handler(self.nndatapath + "/metadata.hdf5")
         trainmeta = meta_handle.read_df("train",read_metadata=True).metadata
@@ -909,16 +1022,16 @@ class UNet_Trainer:
         
         entry = [[experiment_name,self.model_number,train_dataname,train_org,train_micro,train_ttl_img,val_dataname,val_org,val_micro,val_ttl_img,\
                   test_dataname,test_org,test_micro,test_ttl_img,self.batch_size,self.layers,self.hidden_size,self.lr,self.momentum,\
-                  self.weight_decay,self.dropout,self.w0,self.wm_sigma,train_loss,val_loss,val_p,val_r,val_f,val_t,test_loss,test_p,test_r,test_f,test_t,str(timestamp),\
-                 self.numepochs,time_elapsed]]
+                  self.weight_decay,self.dropout,self.w0,self.wm_sigma,train_loss,val_loss,val_p,val_r,val_f,val_t,all_val_f,test_loss,test_p,test_r,\
+                  test_f,test_t,all_test_f,str(timestamp),self.numepochs,time_elapsed]]
                 
         df_out = pd.DataFrame(data=entry,columns=['Experiment Name','Model #','Train Dataset','Train Organism','Train Microscope','Train # Images',\
                                                   'Val Dataset','Val Organism','Val Microscope','Val # Images',\
                                                   'Test Dataset','Test Organism','Test Microscope','Test # Images',\
                                                   'Batch Size','Layers','Hidden Size','Learning Rate','Momentum','Weight Decay',\
                                                   'Dropout',"W0 Weight","Wm Sigma",'Train Loss','Val Loss','Val Precision','Val Recall','Val F1 Score',\
-                                                  'Val Threshold','Test Loss','Test Precision','Test Recall','Test F1 Score','Test Threshold',\
-                                                  'Date/Time','# Epochs','Training Time (mins)'])
+                                                  'Val Threshold','Val F1 Cell Scores','Test Loss','Test Precision','Test Recall','Test F1 Score',\
+                                                  'Test Threshold','Test F1 Cell Scores','Date/Time','# Epochs','Training Time (mins)'])
         
         df_out = df_out.set_index(['Experiment Name','Model #'], drop=True, append=False, inplace=False)
         df_out = df_out.sort_index()
