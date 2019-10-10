@@ -1,0 +1,4 @@
+*.out
+*.dirlock
+*.pyc
+**/.ipynb_checkpoints

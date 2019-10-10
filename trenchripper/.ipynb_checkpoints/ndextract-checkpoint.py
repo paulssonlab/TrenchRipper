@@ -64,7 +64,7 @@ class hdf5_fov_extractor:
     def writemetadata(self):
         ndmeta_handle = nd_metadata_handler(self.nd2filename)
         exp_metadata,fov_metadata = ndmeta_handle.get_metadata()
-        
+        print(exp_metadata)
         self.chunk_shape = (1,exp_metadata["height"],exp_metadata["width"])
         chunk_bytes = (2*np.multiply.accumulate(np.array(self.chunk_shape))[-1])
         self.chunk_cache_mem_size = 2*chunk_bytes
@@ -203,6 +203,8 @@ class nd_metadata_handler:
     def get_metadata(self):
         nd2file = ND2Reader(self.nd2filename)
         exp_metadata = copy.copy(nd2file.metadata)
+        wanted_keys = ['height', 'width', 'date', 'fields_of_view', 'frames', 'z_levels', 'total_images_per_channel', 'channels', 'pixel_microns', 'num_frames', 'experiment']
+        exp_metadata = dict([(k, exp_metadata[k]) for k in wanted_keys if k in exp_metadata])
         exp_metadata["num_fovs"] = len(exp_metadata['fields_of_view'])
         exp_metadata["settings"] = self.get_imaging_settings(nd2file)
         fov_metadata = self.make_fov_df(nd2file)
