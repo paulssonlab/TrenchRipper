@@ -10,7 +10,7 @@ import ipywidgets as ipyw
 
 from nd2reader import ND2Reader
 from tifffile import imsave
-from .utils import pandas_hdf5_handler
+from .utils import pandas_hdf5_handler,writedir
 
 class hdf5_fov_extractor:
     def __init__(self,nd2filename,headpath,tpts_per_file=100): #note this chunk size has a large role in downstream steps...make sure is less than 1 MB
@@ -19,15 +19,6 @@ class hdf5_fov_extractor:
         self.metapath = self.headpath + "/metadata.hdf5"
         self.hdf5path = self.headpath + "/hdf5"
         self.tpts_per_file = tpts_per_file
-        
-    def writedir(self,directory,overwrite=False):
-        if overwrite:
-            if os.path.exists(directory):
-                shutil.rmtree(directory)
-            os.makedirs(directory)
-        else:
-            if not os.path.exists(directory):
-                os.makedirs(directory)
                 
     def assignidx(self,metadf):
         outdf = copy.deepcopy(metadf)
@@ -79,7 +70,7 @@ class hdf5_fov_extractor:
         self.meta_handle.write_df("global",assignment_metadata,metadata=exp_metadata)
                                           
     def extract(self,dask_controller):
-        self.writedir(self.hdf5path,overwrite=True)
+        writedir(self.hdf5path,overwrite=True)
         self.writemetadata()
         
         dask_controller.futures = {}
@@ -125,21 +116,13 @@ class tiff_fov_extractor: ###needs some work
     def __init__(self,nd2filename,tiffpath):
         self.nd2filename = nd2filename
         self.tiffpath = tiffpath
-    def writedir(self,directory,overwrite=False):
-        if overwrite:
-            if os.path.exists(directory):
-                shutil.rmtree(directory)
-            os.makedirs(directory)
-        else:
-            if not os.path.exists(directory):
-                os.makedirs(directory)
     def extract_fov(self,fovnum):
         nd2file = ND2Reader(self.nd2filename)
         metadata = nd2file.metadata
         for i,channel in enumerate(nd2file.metadata["channels"]):
             t_dim = len(nd2file.metadata['frames'])
             dirpath = self.tiffpath + "/fov_" + str(fovnum) + "/" + channel + "/"
-            self.writedir(dirpath,overwrite=True)
+            writedir(dirpath,overwrite=True)
             for frame in nd2file.metadata['frames']:
                 filepath = dirpath + "t_" + str(frame) + ".tif"
                 nd2_image = nd2file.get_frame_2D(c=i, t=frame, v=fovnum)
