@@ -143,6 +143,11 @@ class kymograph_cluster:
             img_arr = imported_hdf5_handle[self.seg_channel][:] #t x y
             perc_arr = np.percentile(img_arr,y_percentile,axis=2,interpolation='lower')
             y_percentiles_smoothed = self.median_filter_2d(perc_arr,smoothing_kernel_y)
+            min_qth_percentile = y_percentiles_smoothed.min(axis=1)
+            max_qth_percentile = y_percentiles_smoothed.max(axis=1)
+            min_qth_percentile = min_qth_percentile[:, np.newaxis]
+            max_qth_percentile = max_qth_percentile[:, np.newaxis]
+            y_percentiles_smoothed = (y_percentiles_smoothed - min_qth_percentile)/(max_qth_percentile - min_qth_percentile)
         return y_percentiles_smoothed
     
     def triangle_threshold(self,img_arr,triangle_nbins,triangle_scaling,triangle_max_threshold,triangle_min_threshold):
@@ -513,7 +518,8 @@ class kymograph_cluster:
         """
 
         otsu_threshold = sk.filters.threshold_otsu(x_percentiles_t[:,np.newaxis],nbins=otsu_nbins)*otsu_scaling
-        x_mask = x_percentiles_t>otsu_threshold
+        x_mask = x_percentiles_t<otsu_threshold
+        #x_mask = x_percentiles_t>otsu_threshold
         midpoints = self.get_midpoints_from_mask(x_mask)
         return midpoints
     
@@ -1203,6 +1209,10 @@ class kymograph_multifov(multifov):
         imported_array = imported_array_list[i]
         y_percentiles = np.percentile(imported_array[0],y_percentile,axis=1,interpolation='lower')
         y_percentiles_smoothed = self.median_filter_2d(y_percentiles,smoothing_kernel_y)
+        # Normalize (scale by range and subtract minimum) to make scaling of thresholds make more sense
+        min_qth_percentile = y_percentiles_smoothed.min(axis=0)
+        max_qth_percentile = y_percentiles_smoothed.max(axis=0)
+        y_percentiles_smoothed = (y_percentiles_smoothed - min_qth_percentile)/(max_qth_percentile - min_qth_percentile)
         return y_percentiles_smoothed
     
     def triangle_threshold(self,img_arr,triangle_nbins,triangle_scaling,triangle_max_threshold,triangle_min_threshold):
@@ -1613,7 +1623,8 @@ class kymograph_multifov(multifov):
             array: array of trench midpoint x positions.
         """
         otsu_threshold = sk.filters.threshold_otsu(x_percentiles_t[:,np.newaxis],nbins=otsu_nbins)*otsu_scaling
-        x_mask = x_percentiles_t>otsu_threshold
+        x_mask = x_percentiles_t<otsu_threshold
+        #x_mask = x_percentiles_t>otsu_threshold
         midpoints = self.get_midpoints_from_mask(x_mask)
         return midpoints,otsu_threshold
     
