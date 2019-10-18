@@ -27,7 +27,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 import numpy as np
-from .utils import pandas_hdf5_handler,kymo_handle
+from .utils import pandas_hdf5_handler,kymo_handle,writedir
 from .cluster import hdf5lock,dask_controller
 from .metrics import object_f_scores
 
@@ -287,25 +287,6 @@ class UNet_Training_DataLoader:
         
         self.metapath = self.nndatapath + "/metadata.hdf5"
         
-        
-    def writedir(self,directory,overwrite=False):
-        """Creates an empty directory at the specified location. If a directory is
-        already at this location, it will be overwritten if 'overwrite' is true,
-        otherwise it will be left alone.
-        
-        Args:
-            directory (str): Path to directory to be overwritten/created.
-            overwrite (bool, optional): Whether to overwrite a directory that
-            already exists in this location.
-        """
-        if overwrite:
-            if os.path.exists(directory):
-                shutil.rmtree(directory)
-            os.makedirs(directory)
-        else:
-            if not os.path.exists(directory):
-                os.makedirs(directory)
-        
     def get_metadata(self,headpath):
         meta_handle = pandas_hdf5_handler(headpath + "/metadata.hdf5")
         global_handle = meta_handle.read_df("global",read_metadata=True)
@@ -346,7 +327,7 @@ class UNet_Training_DataLoader:
                 selectionname=ipyw.fixed(selectionname));
         display(selection)
     
-    def export_chunk(self,selectionname,file_idx,file_trench_indices,weight_grid_list):
+    def export_chunk(self,selectionname,file_idx,augment,file_trench_indices,weight_grid_list):
         selection = getattr(self,selectionname + "_selection")
         datapath = getattr(self,selectionname + "path")
         dataname = getattr(self,selectionname + "name")
@@ -367,7 +348,7 @@ class UNet_Training_DataLoader:
             seg_arr = seg_arr[:,np.newaxis,:,:]
             seg_arr = seg_arr.astype('int8')
 
-        if self.augment:
+        if augment:
             img_arr,seg_arr = self.data_augmentation.get_augmented_data(img_arr,seg_arr)
             
         chunk_shape = (1,1,img_arr.shape[2],img_arr.shape[3])
@@ -420,7 +401,6 @@ class UNet_Training_DataLoader:
     def export_data(self,selectionname,dask_controller,weight_grid_list,augment=False):
         
         dask_controller.futures = {}
-        self.augment = augment
         
         selection = getattr(self,selectionname + "_selection")
         datapath = getattr(self,selectionname + "path")
@@ -454,7 +434,7 @@ class UNet_Training_DataLoader:
         for file_idx in filelist:
             file_trenchdf = filedf.loc[file_idx]
             file_trench_indices = file_trenchdf.index.get_level_values("File Trench Index").unique().tolist()
-            future = dask_controller.daskclient.submit(self.export_chunk,selectionname,file_idx,file_trench_indices,weight_grid_list,retries=1)
+            future = dask_controller.daskclient.submit(self.export_chunk,selectionname,file_idx,augment,file_trench_indices,weight_grid_list,retries=1)
             dask_controller.futures["File Number: " + str(file_idx)] = future
                 
         outputdf = filedf.reset_index(inplace=False)
@@ -510,7 +490,7 @@ class UNet_Training_DataLoader:
             print(key + " " + str(val))
         
     def export_all_data(self,n_workers=20,memory='4GB'):
-        self.writedir(self.nndatapath,overwrite=True)
+        writedir(self.nndatapath,overwrite=True)
         
         grid_keys = self.grid_dict.keys()
         grid_combinations = list(itertools.product(*list(self.grid_dict.values())))
@@ -537,24 +517,6 @@ class GridSearch:
     def __init__(self,nndatapath,numepochs=50):
         self.nndatapath = nndatapath
         self.numepochs = numepochs
-        
-    def writedir(self,directory,overwrite=False):
-        """Creates an empty directory at the specified location. If a directory is
-        already at this location, it will be overwritten if 'overwrite' is true,
-        otherwise it will be left alone.
-        
-        Args:
-            directory (str): Path to directory to be overwritten/created.
-            overwrite (bool, optional): Whether to overwrite a directory that
-            already exists in this location.
-        """
-        if overwrite:
-            if os.path.exists(directory):
-                shutil.rmtree(directory)
-            os.makedirs(directory)
-        else:
-            if not os.path.exists(directory):
-                os.makedirs(directory)
         
     def display_grid(self):
         meta_handle = pandas_hdf5_handler(self.nndatapath + "/metadata.hdf5")
@@ -591,11 +553,11 @@ class GridSearch:
         with open(self.nndatapath + "/models/scripts/" + str(run_idx) + ".py", "w") as scriptfile:
             scriptfile.write(pyscript)
     
-    def generate_sbatchscript(self,run_idx,hours,cores,mem):
+    def generate_sbatchscript(self,run_idx,hours,cores,mem,gres):
         shebang = "#!/bin/bash"
         core_line = "#SBATCH -c " + str(cores)
         hour_line = "#SBATCH -t " + str(hours) + ":00:00"
-        gpu_lines = "#SBATCH -p gpu\n#SBATCH --gres=gpu:1"
+        gpu_lines = "#SBATCH -p gpu\n#SBATCH --gres=" + gres
         mem_line = "#SBATCH --mem=" + mem
         report_lines = "#SBATCH -o " + self.nndatapath + "/models/scripts/" + str(run_idx) +\
         ".out\n#SBATCH -e " + self.nndatapath + "/models/scripts/" + str(run_idx) + ".err\n"
@@ -610,18 +572,18 @@ class GridSearch:
         cmd = ["sbatch",self.nndatapath + "/models/scripts/" + str(run_idx) + ".sh"]
         subprocess.run(cmd)
 
-    def run_grid_search(self,hours=12,cores=2,mem="8G"):
+    def run_grid_search(self,hours=12,cores=2,mem="8G",gres="gpu:1"):
         
         grid_keys = self.grid_dict.keys()
         grid_combinations = list(itertools.product(*list(self.grid_dict.values())))
-        self.writedir(self.nndatapath + "/models",overwrite=True)
-        self.writedir(self.nndatapath + "/models/scripts",overwrite=True)
+        writedir(self.nndatapath + "/models",overwrite=True)
+        writedir(self.nndatapath + "/models/scripts",overwrite=True)
         
         self.run_indices = []
         
         for run_idx,grid_params in enumerate(grid_combinations):
             self.generate_pyscript(run_idx,grid_params)
-            self.generate_sbatchscript(run_idx,hours,cores,mem)
+            self.generate_sbatchscript(run_idx,hours,cores,mem,gres)
             self.run_sbatchscript(run_idx)
             self.run_indices.append(run_idx)
             
@@ -629,6 +591,9 @@ class GridSearch:
         for run_idx in self.run_indices:
             cmd = ["scancel","-p","gpu","--user=" + username]
             subprocess.Popen(cmd,shell=True,stdin=None,stdout=None,stderr=None,close_fds=True)
+            
+
+
 
 class SegmentationDataset(Dataset):
     def __init__(self,filepath,weightchannel="",training=False):
@@ -789,24 +754,6 @@ class UNet_Trainer:
             self.model = self.model.cuda()
             
         self.optimizer = optim.SGD(self.model.parameters(), lr = self.lr,momentum=self.momentum,weight_decay=self.weight_decay)
-        
-    def writedir(self,directory,overwrite=False):
-        """Creates an empty directory at the specified location. If a directory is
-        already at this location, it will be overwritten if 'overwrite' is true,
-        otherwise it will be left alone.
-        
-        Args:
-            directory (str): Path to directory to be overwritten/created.
-            overwrite (bool, optional): Whether to overwrite a directory that
-            already exists in this location.
-        """
-        if overwrite:
-            if os.path.exists(directory):
-                shutil.rmtree(directory)
-            os.makedirs(directory)
-        else:
-            if not os.path.exists(directory):
-                os.makedirs(directory)
                 
     def removefile(self,path):
         if os.path.exists(path):
@@ -981,7 +928,7 @@ class UNet_Trainer:
     def train_model(self):
         timestamp = datetime.datetime.now()
         start = time.time()
-        self.writedir(self.nndatapath + "/models", overwrite=False)
+        writedir(self.nndatapath + "/models", overwrite=False)
         self.removefile(self.nndatapath + "/models/training_metadata_" + str(self.model_number) + ".hdf5")
         
         train_data = SegmentationDataset(self.nndatapath + "/train.hdf5",weightchannel='weight_' + str(tuple([self.w0,self.wm_sigma])),training=True)
@@ -1038,128 +985,244 @@ class UNet_Trainer:
         
         metalock = hdf5lock(self.nndatapath + "/model_metadata.hdf5",updateperiod=5.)
         metalock.lockedfn(self.write_metadata,"w",df_out)
+
+class TrainingVisualizer:
+    def __init__(self,trainpath,modeldbpath):
+        self.trainpath = trainpath
+        self.modelpath = trainpath + "/models"
+        self.modeldfpath = trainpath + "/model_metadata.hdf5"
+        self.modeldbpath = modeldbpath
+        self.paramdbpath = modeldbpath+"/Parameters"
+        self.update_dfs()
+        if os.path.exists(self.modeldfpath):
+            self.models_widget = qgrid.show_grid(self.model_df.sort_index())
         
+    def update_dfs(self):
+        df_idx_list = []
+        for path in os.listdir(self.modelpath):
+            if "training_metadata" in path:
+                df_idx = int(path.split("_")[-1][:-5])
+                df_idx_list.append(df_idx)
+        df_list = []
+        for df_idx in df_idx_list:
+            dfpath = self.modelpath + "/training_metadata_" + str(df_idx) + ".hdf5"
+            df_handle = pandas_hdf5_handler(dfpath)
+            df = df_handle.read_df("data")
+            df_list.append(copy.deepcopy(df))
+            del df
+        self.train_df = pd.concat(df_list)
+        if os.path.exists(self.modeldfpath):
+            modeldfhandle = pandas_hdf5_handler(self.modeldfpath)
+            self.model_df = modeldfhandle.read_df("data").sort_index()
+        
+    def select_df_columns(self,selected_columns):
+        df = copy.deepcopy(self.model_df)
+        for column in df.columns.tolist():
+            if column not in selected_columns:
+                df = df.drop(column, 1)
+        self.model_widget = qgrid.show_grid(df)
+
+    def inter_df_columns(self):
+        column_list = self.model_df.columns.tolist()
+        inter = ipyw.interactive(self.select_df_columns,{"manual":True},selected_columns=ipyw.SelectMultiple(options=column_list,description='Columns to Display:',disabled=False))
+        display(inter)
+
+    def handle_filter_changed(self,event,widget):
+        df = widget.get_changed_df().sort_index()
+        
+        all_model_indices = self.train_df.index.get_level_values("Model #").unique().tolist()
+        current_model_indices = df.index.get_level_values("Model #").unique().tolist()
+        
+        all_epochs = []
+        all_loss = []
+        for model_idx in all_model_indices:
+            if model_idx in current_model_indices:
+                filter_df = df.loc[model_idx]
+                epochs,loss = (filter_df.index.get_level_values("Epoch").tolist(),filter_df[self.losskey].tolist())
+                all_epochs += epochs
+                all_loss += loss
+                self.line_dict[model_idx].set_data(epochs,loss)
+                self.line_dict[model_idx].set_label(str(model_idx))
+            else:
+                epochs_empty,loss_empty = ([],[])
+                self.line_dict[model_idx].set_data(epochs_empty,loss_empty)
+                self.line_dict[model_idx].set_label('_nolegend_')
+                
+        self.ax.set_xlim(min(all_epochs), max(all_epochs)+1)
+        self.ax.set_ylim(0, max(all_loss)*1.1)
+        self.ax.legend()
+        self.fig.canvas.draw()
+
+    def inter_plot_loss(self,losskey):
+        self.losskey = losskey
+        self.fig,self.ax = plt.subplots()
+        self.grid_widget = qgrid.show_grid(self.train_df.sort_index())
+        current_df = self.grid_widget.get_changed_df()
+        
+        self.line_dict = {}
+        for model_idx in current_df.index.get_level_values("Model #").unique().tolist():
+            filter_df = current_df.loc[model_idx]
+            epochs,loss = (filter_df.index.get_level_values("Epoch").tolist(),filter_df[losskey].tolist())
+            line, = self.ax.plot(epochs,loss,label=str(model_idx))
+            self.line_dict[model_idx] = line
+            
+        self.ax.set_xlabel("Epoch")
+        self.ax.set_ylabel(losskey)
+        self.ax.legend()
+        
+    def export_models(self):
+        writedir(self.modeldbpath,overwrite=False)
+        writedir(self.modeldbpath+"/Parameters",overwrite=False)
+        modeldbhandle = pandas_hdf5_handler(self.modeldbpath + "/Models.hdf5")
+        if "Models.hdf5" in os.listdir(self.modeldbpath):
+            old_df = modeldbhandle.read_df("data")
+            current_df = self.models_widget.get_changed_df()
+            current_df = pd.concat([old_df, current_df])
+        else:
+            current_df = self.models_widget.get_changed_df()
+        modeldbhandle.write_df("data",current_df)
+        
+        indices = current_df.index.tolist()
+        exp_names = [str(item[0]) for item in indices]
+        model_numbers = [str(item[1]) for item in indices]
+        dates = [item.replace(" ","_") for item in current_df["Date/Time"].tolist()]
+        
+        for i in range(len(model_numbers)):
+            exp_name,model_number,date = (exp_names[i],model_numbers[i],dates[i])
+            shutil.copyfile(self.modelpath + "/" + str(model_number) + ".pt",self.paramdbpath+"/"+exp_name+"_"+model_number+"_"+date+".pt")
+
 class UNet_Segmenter:
-    
-    def __init__(self,headpath,seg_channel,paramspath,min_obj_size=20,cell_threshold_scaling=1.,border_threshold_scaling=1.,\
-                 layers=3,hidden_size=64,batch_size=100,gpuon=False):
+    def __init__(self,headpath,modeldbpath):#,min_obj_size=20):#,cell_threshold_scaling=1.,border_threshold_scaling=1.,\
+             #    layers=3,hidden_size=64,batch_size=100,gpuon=False):
         
         self.headpath = headpath
-        self.kymopath = headpath + "/kymo"
-        self.segpath = headpath + "/segmentation"
-        self.nnpath = headpath + "/nn"
+        self.kymopath = headpath + "/kymograph"
+        self.nnoutputpath = headpath + "/phasesegmentation"
         self.metapath = headpath + "/metadata.hdf5"
-        self.nnoutputpath = headpath + "/nnsegmentation"
+        self.meta_handle = pandas_hdf5_handler(self.metapath)
+        globaldf = self.meta_handle.read_df("global",read_metadata=True)
+        self.all_channels = globaldf.metadata['channels']
+        
+        self.modeldbpath = modeldbpath
+        self.update_dfs()
+        
+        if os.path.exists(self.modeldbpath):
+            self.models_widget = qgrid.show_grid(self.models_df.sort_index())
+        
+#         self.min_obj_size = min_obj_size
+#         self.border_threshold_scaling = border_threshold_scaling
+#         self.gpuon = gpuon
+#         self.layers = layers
+#         self.hidden_size = hidden_size
+#         self.batch_size = batch_size
+        
+    def update_dfs(self):
+        dfpath = self.modeldbpath + "/Models.hdf5"
+        if os.path.exists(dfpath):
+            df_handle = pandas_hdf5_handler(dfpath)
+            self.models_df = df_handle.read_df("data")
+            
+    def select_df_columns(self,selected_columns):
+        df = copy.deepcopy(self.models_df)
+        for column in df.columns.tolist():
+            if column not in selected_columns:
+                df = df.drop(column, 1)
+        self.model_widget = qgrid.show_grid(df)
+
+    def inter_df_columns(self):
+        column_list = self.models_df.columns.tolist()
+        inter = ipyw.interactive(self.select_df_columns,{"manual":True},selected_columns=ipyw.SelectMultiple(options=column_list,description='Columns to Display:',disabled=False))
+        display(inter)
+        
+    def select_model(self):
+        current_df = self.model_widget.get_changed_df()
+        print(current_df)
+        
+    def choose_seg_channel(self,seg_channel):
         self.seg_channel = seg_channel
-        self.paramspath = paramspath
-        self.min_obj_size = min_obj_size
-        self.cell_threshold_scaling = cell_threshold_scaling
-        self.border_threshold_scaling = border_threshold_scaling
-        self.gpuon = gpuon
-        self.layers = layers
-        self.hidden_size = hidden_size
-        self.batch_size = batch_size
-        
-    def writedir(self,directory,overwrite=False):
-        """Creates an empty directory at the specified location. If a directory is
-        already at this location, it will be overwritten if 'overwrite' is true,
-        otherwise it will be left alone.
-        
-        Args:
-            directory (str): Path to directory to be overwritten/created.
-            overwrite (bool, optional): Whether to overwrite a directory that
-            already exists in this location.
-        """
-        if overwrite:
-            if os.path.exists(directory):
-                shutil.rmtree(directory)
-            os.makedirs(directory)
-        else:
-            if not os.path.exists(directory):
-                os.makedirs(directory)
                 
-    def prepare_data(self,fov_num):
-        self.writedir(self.nnoutputpath,overwrite=False)
-        writepath = self.nnoutputpath + "/nninput_" + str(fov_num) + ".hdf5"
-        img_path = self.kymopath + "/kymo_" + str(fov_num) + ".hdf5"
-        with h5py.File(writepath,"w") as outfile:
-            with h5py.File(img_path,"r") as infile:
-                keys = list(infile.keys())
-                ex_data = infile[keys[0]+"/"+self.seg_channel]
-                out_shape = (len(keys)*ex_data.shape[2],1,ex_data.shape[0],ex_data.shape[1])
-                chunk_shape = (1,1,out_shape[2],out_shape[3])
-                img_handle = outfile.create_dataset("img",out_shape,chunks=chunk_shape,dtype=float)
+#     def prepare_data(self,fov_num):
+#         writedir(self.nnoutputpath,overwrite=False)
+#         writepath = self.nnoutputpath + "/nninput_" + str(fov_num) + ".hdf5"
+#         img_path = self.kymopath + "/kymo_" + str(fov_num) + ".hdf5"
+#         with h5py.File(writepath,"w") as outfile:
+#             with h5py.File(img_path,"r") as infile:
+#                 keys = list(infile.keys())
+#                 ex_data = infile[keys[0]+"/"+self.seg_channel]
+#                 out_shape = (len(keys)*ex_data.shape[2],1,ex_data.shape[0],ex_data.shape[1])
+#                 chunk_shape = (1,1,out_shape[2],out_shape[3])
+#                 img_handle = outfile.create_dataset("img",out_shape,chunks=chunk_shape,dtype=float)
                 
-                for i,trenchid in enumerate(keys):
-                    img_arr = infile[trenchid+"/"+self.seg_channel][:]
-                    img_arr = np.moveaxis(img_arr,(0,1,2),(1,2,0))
-                    img_arr = np.expand_dims(img_arr,1)
-                    img_arr = img_arr.astype(float)
+#                 for i,trenchid in enumerate(keys):
+#                     img_arr = infile[trenchid+"/"+self.seg_channel][:]
+#                     img_arr = np.moveaxis(img_arr,(0,1,2),(1,2,0))
+#                     img_arr = np.expand_dims(img_arr,1)
+#                     img_arr = img_arr.astype(float)
                     
-                    img_handle[i*ex_data.shape[2]:(i+1)*ex_data.shape[2]] = img_arr
+#                     img_handle[i*ex_data.shape[2]:(i+1)*ex_data.shape[2]] = img_arr
     
-    def segment(self,fov_num):
-        torch.cuda.empty_cache()
-        self.model = UNet(1,3,layers=self.layers,hidden_size=self.hidden_size,withsoftmax=True)
+#     def segment(self,fov_num):
+#         torch.cuda.empty_cache()
+#         self.model = UNet(1,3,layers=self.layers,hidden_size=self.hidden_size,withsoftmax=True)
         
-        if self.gpuon:
-            device = torch.device("cuda")
-            self.model.load_state_dict(torch.load(self.paramspath))
-            self.model.to(device)
-        else:
-            device = torch.device('cpu')
-            self.model.load_state_dict(torch.load(self.paramspath, map_location=device))
-        self.model.eval()
+#         if self.gpuon:
+#             device = torch.device("cuda")
+#             self.model.load_state_dict(torch.load(self.paramspath))
+#             self.model.to(device)
+#         else:
+#             device = torch.device('cpu')
+#             self.model.load_state_dict(torch.load(self.paramspath, map_location=device))
+#         self.model.eval()
         
-        inputpath = self.nnoutputpath + "/nninput_" + str(fov_num) + ".hdf5"
-        outputpath = self.nnoutputpath + "/nnoutput_" + str(fov_num) + ".hdf5"
-        with h5py.File(inputpath,"r") as infile:
-            out_shape = tuple((infile["img"].shape[0],3,infile["img"].shape[2],infile["img"].shape[3]))
-            chunk_shape = infile["img"].chunks
-        data = SegmentationDataset(inputpath,training=False)
-        data_iter = DataLoader(data,batch_size=self.batch_size,shuffle=False) #careful
-        with h5py.File(outputpath,"w") as outfile:
-            img_handle = outfile.create_dataset("img",out_shape,chunks=chunk_shape,dtype=float)
-            print(len(data_iter))
-            for i,b in enumerate(data_iter):
-                print(i)
-                x = torch.Tensor(b['img'].numpy())
-                if self.gpuon:
-                    x = x.cuda()
-                fx = self.model.forward(x) #N,3,y,x
-                img_handle[i*self.batch_size:(i+1)*self.batch_size] = fx.cpu().data.numpy()
+#         inputpath = self.nnoutputpath + "/nninput_" + str(fov_num) + ".hdf5"
+#         outputpath = self.nnoutputpath + "/nnoutput_" + str(fov_num) + ".hdf5"
+#         with h5py.File(inputpath,"r") as infile:
+#             out_shape = tuple((infile["img"].shape[0],3,infile["img"].shape[2],infile["img"].shape[3]))
+#             chunk_shape = infile["img"].chunks
+#         data = SegmentationDataset(inputpath,training=False)
+#         data_iter = DataLoader(data,batch_size=self.batch_size,shuffle=False) #careful
+#         with h5py.File(outputpath,"w") as outfile:
+#             img_handle = outfile.create_dataset("img",out_shape,chunks=chunk_shape,dtype=float)
+#             print(len(data_iter))
+#             for i,b in enumerate(data_iter):
+#                 print(i)
+#                 x = torch.Tensor(b['img'].numpy())
+#                 if self.gpuon:
+#                     x = x.cuda()
+#                 fx = self.model.forward(x) #N,3,y,x
+#                 img_handle[i*self.batch_size:(i+1)*self.batch_size] = fx.cpu().data.numpy()
         
-    def postprocess(self,fov_num):
-        nninputpath = self.nnoutputpath + "/nninput_" + str(fov_num) + ".hdf5"
-        nnoutputpath = self.nnoutputpath + "/nnoutput_" + str(fov_num) + ".hdf5"
-        segpath = self.nnoutputpath + "/seg_" + str(fov_num) + ".hdf5"
-        kymopath = self.kymopath + "/kymo_" + str(fov_num) + ".hdf5"
-        with h5py.File(kymopath,"r") as kymofile:
-            trench_num = len(kymofile.keys())
-            trenchids = list(kymofile.keys())
-        with h5py.File(segpath,"w") as outfile:
-            with h5py.File(nnoutputpath,"r") as infile:
-                num_img = infile["img"].shape[0]
-                y_shape,x_shape = (infile["img"].shape[2],infile["img"].shape[3])
-                timepoints = int(num_img/trench_num)
-                for trench in range(trench_num):
-                    print(trench)
-                    trenchid = trenchids[trench]
-                    trench_data = infile["img"][trench*timepoints:(trench+1)*timepoints] #t,3,y,x
-                    trench_output = []
-                    for t in range(timepoints):
-                        cell_otsu = sk.filters.threshold_otsu(trench_data[t,1])*self.cell_threshold_scaling
-                        border_otsu = sk.filters.threshold_otsu(trench_data[t,2])*self.border_threshold_scaling
-                        cell_mask = trench_data[t,1]>cell_otsu
-                        border_mask = trench_data[t,2]>border_otsu
-                        trench_arr = cell_mask*(~border_mask)
-                        del cell_mask
-                        del border_mask
-                        trench_arr = sk.morphology.remove_small_objects(trench_arr,min_size=self.min_obj_size)                        
-                        trench_output.append(trench_arr)
-                        del trench_arr
-                    trench_output = np.array(trench_output)
-                    trench_output = np.moveaxis(trench_output,(0,1,2),(2,0,1))
-                    outdset = outfile.create_dataset(trenchid, data=trench_output, chunks=(y_shape,x_shape,1), dtype=bool)
-#         os.remove(nninputpath)
-#         os.remove(nnoutputpath)
+#     def postprocess(self,fov_num):
+#         nninputpath = self.nnoutputpath + "/nninput_" + str(fov_num) + ".hdf5"
+#         nnoutputpath = self.nnoutputpath + "/nnoutput_" + str(fov_num) + ".hdf5"
+#         segpath = self.nnoutputpath + "/seg_" + str(fov_num) + ".hdf5"
+#         kymopath = self.kymopath + "/kymo_" + str(fov_num) + ".hdf5"
+#         with h5py.File(kymopath,"r") as kymofile:
+#             trench_num = len(kymofile.keys())
+#             trenchids = list(kymofile.keys())
+#         with h5py.File(segpath,"w") as outfile:
+#             with h5py.File(nnoutputpath,"r") as infile:
+#                 num_img = infile["img"].shape[0]
+#                 y_shape,x_shape = (infile["img"].shape[2],infile["img"].shape[3])
+#                 timepoints = int(num_img/trench_num)
+#                 for trench in range(trench_num):
+#                     print(trench)
+#                     trenchid = trenchids[trench]
+#                     trench_data = infile["img"][trench*timepoints:(trench+1)*timepoints] #t,3,y,x
+#                     trench_output = []
+#                     for t in range(timepoints):
+#                         cell_otsu = sk.filters.threshold_otsu(trench_data[t,1])*self.cell_threshold_scaling
+#                         border_otsu = sk.filters.threshold_otsu(trench_data[t,2])*self.border_threshold_scaling
+#                         cell_mask = trench_data[t,1]>cell_otsu
+#                         border_mask = trench_data[t,2]>border_otsu
+#                         trench_arr = cell_mask*(~border_mask)
+#                         del cell_mask
+#                         del border_mask
+#                         trench_arr = sk.morphology.remove_small_objects(trench_arr,min_size=self.min_obj_size)                        
+#                         trench_output.append(trench_arr)
+#                         del trench_arr
+#                     trench_output = np.array(trench_output)
+#                     trench_output = np.moveaxis(trench_output,(0,1,2),(2,0,1))
+#                     outdset = outfile.create_dataset(trenchid, data=trench_output, chunks=(y_shape,x_shape,1), dtype=bool)
+# #         os.remove(nninputpath)
+# #         os.remove(nnoutputpath)

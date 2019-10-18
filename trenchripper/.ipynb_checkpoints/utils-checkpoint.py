@@ -90,3 +90,12 @@ class pandas_hdf5_handler:
             if read_metadata:
                 df.metadata = store.get_storer(key).attrs.metadata
             return df
+        
+def writedir(directory,overwrite=False):
+    if overwrite:
+        if os.path.exists(directory):
+            shutil.rmtree(directory)
+        os.makedirs(directory)
+    else:
+        if not os.path.exists(directory):
+            os.makedirs(directory)

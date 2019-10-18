@@ -43,16 +43,21 @@ class kymograph_interactive(kymograph_multifov):
         plt.imshow(img_arr)
 
     def preview_y_precentiles(self,imported_array_list, y_percentile, smoothing_kernel_y_dim_0,\
-                          triangle_nbins,triangle_scaling):
+                          triangle_nbins,triangle_scaling,triangle_threshold_bounds):
+        
+        triangle_min_threshold,triangle_max_threshold = triangle_threshold_bounds
         
         self.final_params['Y Percentile'] = y_percentile
         self.final_params['Y Smoothing Kernel'] = smoothing_kernel_y_dim_0
         self.final_params['Triangle Threshold Bins'] = triangle_nbins
         self.final_params['Triangle Threshold Scaling'] = triangle_scaling
+        self.final_params['Triangle Max Threshold'] = triangle_max_threshold
+        self.final_params['Triangle Min Threshold'] = triangle_min_threshold
         
         y_percentiles_smoothed_list = self.map_to_fovs(self.get_smoothed_y_percentiles,imported_array_list,\
                                                        y_percentile,(smoothing_kernel_y_dim_0,1))
-        thresholds = [self.triangle_threshold(y_percentiles_smoothed,triangle_nbins,triangle_scaling)[1] for y_percentiles_smoothed in y_percentiles_smoothed_list]
+        thresholds = [self.triangle_threshold(y_percentiles_smoothed,triangle_nbins,triangle_scaling,\
+                        triangle_max_threshold,triangle_min_threshold)[1] for y_percentiles_smoothed in y_percentiles_smoothed_list]
         self.plot_y_precentiles(y_percentiles_smoothed_list,self.fov_list,thresholds)
         return y_percentiles_smoothed_list
            
@@ -105,6 +110,31 @@ class kymograph_interactive(kymograph_multifov):
             
         plt.show()
         
+        
+#         y_percentiles_smoothed_list = self.map_to_fovs(self.get_smoothed_y_percentiles,imported_array_list,\
+#                                                        self.y_percentile,self.smoothing_kernel_y)
+        
+#         get_trench_edges_y_output = self.map_to_fovs(self.get_trench_edges_y,y_percentiles_smoothed_list,self.triangle_nbins,self.triangle_scaling)
+#         trench_edges_y_lists = [item[0] for item in get_trench_edges_y_output]
+#         start_above_lists = [item[1] for item in get_trench_edges_y_output]
+#         end_above_lists = [item[2] for item in get_trench_edges_y_output]
+                
+#         orientations_list = self.map_to_fovs(self.get_manual_orientations,trench_edges_y_lists,start_above_lists,end_above_lists,self.expected_num_rows,\
+#                                              self.orientation_detection,self.orientation_on_fail,self.y_min_edge_dist)
+        
+#         y_ends_lists = self.map_to_fovs(self.get_trench_ends,trench_edges_y_lists,start_above_lists,end_above_lists,orientations_list,self.y_min_edge_dist)
+
+#         y_drift_list = self.map_to_fovs(self.get_y_drift,y_ends_lists)
+        
+#         keep_in_frame_kernels_output = self.map_to_fovs(self.keep_in_frame_kernels,y_ends_lists,y_drift_list,imported_array_list,orientations_list,self.padding_y,self.trench_len_y)
+#         valid_y_ends_lists = [item[0] for item in keep_in_frame_kernels_output]
+#         valid_orientations_list = [item[1] for item in keep_in_frame_kernels_output]
+#         cropped_in_y_list = self.map_to_fovs(self.crop_y,imported_array_list,y_drift_list,valid_y_ends_lists,,self.padding_y,\
+#                                              self.trench_len_y)
+        
+#         return cropped_in_y_list
+        
+        
     def preview_y_crop(self,y_percentiles_smoothed_list, imported_array_list,y_min_edge_dist, padding_y,\
                        trench_len_y,vertical_spacing,expected_num_rows,orientation_detection,orientation_on_fail):
         
@@ -117,45 +147,38 @@ class kymograph_interactive(kymograph_multifov):
         
         triangle_nbins = self.final_params['Triangle Threshold Bins']
         triangle_scaling = self.final_params['Triangle Threshold Scaling']
+        triangle_max_threshold = self.final_params['Triangle Max Threshold']
+        triangle_min_threshold = self.final_params['Triangle Min Threshold']
         
-        trench_edges_y_lists = self.map_to_fovs(self.get_trench_edges_y,y_percentiles_smoothed_list,triangle_nbins,\
-                                               triangle_scaling,y_min_edge_dist)
-        y_midpoints_list = self.map_to_fovs(self.get_y_midpoints,trench_edges_y_lists)
-        y_drift_list = self.map_to_fovs(self.get_y_drift,y_midpoints_list)
-                
-        if orientation_detection == 'phase':
-            valid_edges_y_output = self.map_to_fovs(self.keep_in_frame_kernels,trench_edges_y_lists,y_drift_list,imported_array_list,padding_y)
-            valid_edges_y_lists = [item[0] for item in valid_edges_y_output]
-            trench_orientations_list = self.map_to_fovs(self.get_phase_orientations,y_percentiles_smoothed_list,valid_edges_y_lists)
+        get_trench_edges_y_output = self.map_to_fovs(self.get_trench_edges_y,y_percentiles_smoothed_list,triangle_nbins,triangle_scaling,triangle_max_threshold,triangle_min_threshold)
+        trench_edges_y_lists = [item[0] for item in get_trench_edges_y_output]
+        start_above_lists = [item[1] for item in get_trench_edges_y_output]
+        end_above_lists = [item[2] for item in get_trench_edges_y_output]
         
-        elif orientation_detection == 0 or orientation_detection == 1:
-            trench_orientations_list = self.map_to_fovs(self.get_manual_orientations,trench_edges_y_lists,expected_num_rows,orientation_detection,orientation_on_fail)
-            valid_edges_y_output = self.map_to_fovs(self.keep_in_frame_kernels,trench_edges_y_lists,y_drift_list,imported_array_list,padding_y)
-            valid_edges_y_lists = [item[0] for item in valid_edges_y_output]
-            valid_orientation_lists = [item[1] for item in valid_edges_y_output]
-            trench_orientations_list = [np.array(item)[valid_orientation_lists[i]].tolist() for i,item in enumerate(trench_orientations_list)]
+        orientations_list = self.map_to_fovs(self.get_manual_orientations,trench_edges_y_lists,start_above_lists,end_above_lists,expected_num_rows,\
+                                             orientation_detection,orientation_on_fail,y_min_edge_dist)
+        y_ends_lists = self.map_to_fovs(self.get_trench_ends,trench_edges_y_lists,start_above_lists,end_above_lists,orientations_list,y_min_edge_dist)
+        y_drift_list = self.map_to_fovs(self.get_y_drift,y_ends_lists)
+        keep_in_frame_kernels_output = self.map_to_fovs(self.keep_in_frame_kernels,y_ends_lists,y_drift_list,imported_array_list,orientations_list,padding_y,trench_len_y)
+        valid_y_ends_lists = [item[0] for item in keep_in_frame_kernels_output]
+        valid_orientations_list = [item[1] for item in keep_in_frame_kernels_output]
+        cropped_in_y_list = self.map_to_fovs(self.crop_y,imported_array_list,y_drift_list,valid_y_ends_lists,orientations_list,padding_y,trench_len_y)
 
-        else:
-            print("Orientation detection value invalid!")
-        
-        cropped_in_y_list = self.map_to_fovs(self.crop_y,imported_array_list,y_drift_list,valid_edges_y_lists,trench_orientations_list,padding_y,\
-                                             trench_len_y)
-
-        self.plot_y_crop(cropped_in_y_list,imported_array_list,self.fov_list,vertical_spacing,trench_orientations_list)
+        self.plot_y_crop(cropped_in_y_list,imported_array_list,self.fov_list,vertical_spacing,orientations_list)
         return cropped_in_y_list
         
-    def plot_y_crop(self,cropped_in_y_list,imported_array_list,fov_list,vertical_spacing,trench_orientations_list):
+    def plot_y_crop(self,cropped_in_y_list,imported_array_list,fov_list,vertical_spacing,valid_orientations_list):
         fig = plt.figure()
         ax = fig.gca(projection='3d')
         
         time_list = range(1,imported_array_list[0].shape[3]+1)
         
-        nrows = np.sum([len(item) for item in trench_orientations_list])
+        nrows = np.sum([len(item) for item in valid_orientations_list])
         ncols = len(time_list)
         
         idx = 0
         for i,cropped_in_y in enumerate(cropped_in_y_list):
-            num_rows = len(trench_orientations_list[i])
+            num_rows = len(valid_orientations_list[i])
             for j in range(num_rows):
                 for k,t in enumerate(time_list):
                     idx += 1
@@ -303,12 +326,12 @@ class kymograph_interactive(kymograph_multifov):
             pickle.dump(self.final_params, outfile)
             
 class fluo_segmentation_interactive(fluo_segmentation):
-    def __init__(self,headpath,smooth_sigma=0.75,wrap_pad=0,hess_pad=4,min_obj_size=30,cell_mask_method='local',\
-                 global_otsu_scaling=1.,cell_otsu_scaling=1.,local_otsu_r=15,edge_threshold_scaling=1.,threshold_step_perc=0.1,\
+    def __init__(self,headpath,smooth_sigma=0.75,wrap_pad=0,hess_pad=6,min_obj_size=30,cell_mask_method='local',\
+                 global_threshold=1000,cell_otsu_scaling=1.,local_otsu_r=15,edge_threshold_scaling=1.,threshold_step_perc=0.1,\
                  threshold_perc_num_steps=2,convex_threshold=0.8):
         
         fluo_segmentation.__init__(self,smooth_sigma=smooth_sigma,wrap_pad=wrap_pad,hess_pad=hess_pad,min_obj_size=min_obj_size,\
-                                   cell_mask_method=cell_mask_method,global_otsu_scaling=global_otsu_scaling,cell_otsu_scaling=cell_otsu_scaling,\
+                                   cell_mask_method=cell_mask_method,global_threshold=global_threshold,cell_otsu_scaling=cell_otsu_scaling,\
                                    local_otsu_r=local_otsu_r,edge_threshold_scaling=edge_threshold_scaling,threshold_step_perc=threshold_step_perc,\
                                    threshold_perc_num_steps=threshold_perc_num_steps,convex_threshold=convex_threshold)
 
@@ -390,35 +413,75 @@ class fluo_segmentation_interactive(fluo_segmentation):
         self.plot_img_list(scaled_list)
         return scaled_list
     
-    def plot_processed(self,scaled_list,smooth_sigma):
+    def plot_processed(self,scaled_list,smooth_sigma,bit_max):
         self.final_params['Gaussian Kernel Sigma:'] = smooth_sigma
+        self.final_params['8 Bit Maximum:'] = bit_max
         proc_list = []
+        unwrap_proc_list = []
         for scaled in scaled_list:
-            proc_img = self.preprocess_img(scaled,sigma=smooth_sigma)
+            scaled_kymo = kymo_handle()
+            scaled_kymo.import_unwrap(scaled,self.t_tot,padding=self.wrap_pad)
+            wrap_scaled = scaled_kymo.return_wrap()
+            
+            proc_img = self.preprocess_img(wrap_scaled,sigma=smooth_sigma,bit_max=bit_max)
+            
+            proc_kymo = kymo_handle()
+            proc_kymo.import_wrap(proc_img)
+            unwrap_proc = proc_kymo.return_unwrap(padding=0)
             proc_list.append(proc_img)
-        self.plot_img_list(proc_list)
+            unwrap_proc_list.append(unwrap_proc)
+        self.plot_img_list(unwrap_proc_list)
+        
+        plt.hist(np.array(scaled_list).flatten(),bins=50)
+        plt.show()
+        
         return proc_list
     
     def plot_eigval(self,proc_list):
         eigval_list = []
+        unwrap_eigval_list = []        
         for proc in proc_list:
-            inverted = sk.util.invert(proc)
-            min_eigvals = self.to_8bit(self.hessian_contrast_enc(inverted,self.hess_pad))
+            inverted = np.array([sk.util.invert(proc[t]) for t in range(proc.shape[0])])
+#             plt.imshow(inverted[0])
+#             plt.show()
+#             plt.imshow(self.to_8bit(self.hessian_contrast_enc(inverted[0],self.hess_pad)))
+#             plt.show()
+#             min_eigvals = np.array([self.to_8bit(self.hessian_contrast_enc(inverted[t],self.hess_pad)) for t in range(inverted.shape[0])])
+            min_eigvals = np.array([self.hessian_contrast_enc(inverted[t],self.hess_pad) for t in range(inverted.shape[0])])
+#             inverted = sk.util.invert(proc)
+#             min_eigvals = self.to_8bit(self.hessian_contrast_enc(inverted,self.hess_pad))
+            eigval_kymo = kymo_handle()
+            eigval_kymo.import_wrap(min_eigvals)
+            unwrap_eigvals = eigval_kymo.return_unwrap(padding=0)
+
             eigval_list.append(min_eigvals)
-        self.plot_img_list(eigval_list)
+            unwrap_eigval_list.append(unwrap_eigvals)
+        self.plot_img_list(unwrap_eigval_list)
         return eigval_list
     
-    def plot_cell_mask(self,proc_list,global_otsu_scaling,cell_mask_method,cell_otsu_scaling,local_otsu_r):
+    def plot_cell_mask(self,proc_list,global_threshold,cell_mask_method,cell_otsu_scaling,local_otsu_r):
         self.final_params['Cell Mask Thresholding Method:'] = cell_mask_method
-        self.final_params['Global Threshold Scaling:'] = global_otsu_scaling
+        self.final_params['Global Threshold:'] = global_threshold
         self.final_params['Cell Threshold Scaling:'] = cell_otsu_scaling
         self.final_params['Local Otsu Radius:'] = local_otsu_r
         
         cell_mask_list = []
+        unwrap_cell_mask_list = []
+        
         for proc in proc_list:
-            cell_mask = self.cell_region_mask(proc,method=cell_mask_method,global_otsu_scaling=global_otsu_scaling,cell_otsu_scaling=cell_otsu_scaling,t_tot=self.t_tot,local_otsu_r=local_otsu_r)
+            cell_mask = self.cell_region_mask(proc,method=cell_mask_method,global_threshold=global_threshold,cell_otsu_scaling=cell_otsu_scaling,local_otsu_r=local_otsu_r)
             cell_mask_list.append(cell_mask)
-        self.plot_img_list(cell_mask_list)
+            
+            cell_mask_kymo = kymo_handle()
+            cell_mask_kymo.import_wrap(cell_mask)
+            unwrap_cell_mask = cell_mask_kymo.return_unwrap(padding=0)
+            
+            unwrap_cell_mask_list.append(unwrap_cell_mask)
+        self.plot_img_list(unwrap_cell_mask_list)
+        
+        plt.hist(np.array(proc_list).flatten(),bins=50)
+        plt.show()
+        
         return cell_mask_list
     
     def plot_threshold_result(self,eigval_list,cell_mask_list,edge_threshold_scaling,min_obj_size):
@@ -427,10 +490,15 @@ class fluo_segmentation_interactive(fluo_segmentation):
         for i,min_eigvals in enumerate(eigval_list):
             cell_mask = cell_mask_list[i]
             
-            eig_kymo = kymo_handle()
-            eig_kymo.import_unwrap(min_eigvals,self.t_tot,padding=self.wrap_pad)
-            wrap_eig = eig_kymo.return_wrap()
-            edge_threshold = self.get_mid_threshold_arr(wrap_eig,edge_threshold_scaling=edge_threshold_scaling,padding=self.wrap_pad)
+            edge_threshold = self.get_mid_threshold_arr(min_eigvals,edge_threshold_scaling=edge_threshold_scaling,padding=self.wrap_pad)
+            
+            cell_mask_kymo = kymo_handle()
+            cell_mask_kymo.import_wrap(cell_mask)
+            cell_mask = cell_mask_kymo.return_unwrap(padding=self.wrap_pad)
+
+            min_eigvals_kymo = kymo_handle()
+            min_eigvals_kymo.import_wrap(min_eigvals)
+            min_eigvals = min_eigvals_kymo.return_unwrap(padding=self.wrap_pad)
             
             composite_mask = self.find_mask(cell_mask,min_eigvals,edge_threshold,min_obj_size=min_obj_size)
             composite_mask_list.append(composite_mask)
@@ -449,10 +517,15 @@ class fluo_segmentation_interactive(fluo_segmentation):
         for i,min_eigvals in enumerate(eigval_list):
             cell_mask = cell_mask_list[i]
             
-            eig_kymo = kymo_handle()
-            eig_kymo.import_unwrap(min_eigvals,self.t_tot,padding=self.wrap_pad)
-            wrap_eig = eig_kymo.return_wrap()
-            mid_threshold_arr = self.get_mid_threshold_arr(wrap_eig,edge_threshold_scaling=edge_threshold_scaling,padding=self.wrap_pad)
+            mid_threshold_arr = self.get_mid_threshold_arr(min_eigvals,edge_threshold_scaling=edge_threshold_scaling,padding=self.wrap_pad)
+            
+            cell_mask_kymo = kymo_handle()
+            cell_mask_kymo.import_wrap(cell_mask)
+            cell_mask = cell_mask_kymo.return_unwrap(padding=self.wrap_pad)
+
+            min_eigvals_kymo = kymo_handle()
+            min_eigvals_kymo.import_wrap(min_eigvals)
+            min_eigvals = min_eigvals_kymo.return_unwrap(padding=self.wrap_pad)
             
             conv_scores = self.get_scores(cell_mask,min_eigvals,mid_threshold_arr,\
                                           threshold_step_perc=threshold_step_perc,threshold_perc_num_steps=threshold_perc_num_steps,min_obj_size=min_obj_size)
