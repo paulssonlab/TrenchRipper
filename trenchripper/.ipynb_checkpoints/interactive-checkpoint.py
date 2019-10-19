@@ -155,16 +155,26 @@ class kymograph_interactive(kymograph_multifov):
         start_above_lists = [item[1] for item in get_trench_edges_y_output]
         end_above_lists = [item[2] for item in get_trench_edges_y_output]
         
-        orientations_list = self.map_to_fovs(self.get_manual_orientations,trench_edges_y_lists,start_above_lists,end_above_lists,expected_num_rows,\
+        get_manual_orientations_output = self.map_to_fovs(self.get_manual_orientations,trench_edges_y_lists,start_above_lists,end_above_lists,expected_num_rows,\
                                              orientation_detection,orientation_on_fail,y_min_edge_dist)
-        y_ends_lists = self.map_to_fovs(self.get_trench_ends,trench_edges_y_lists,start_above_lists,end_above_lists,orientations_list,y_min_edge_dist)
-        y_drift_list = self.map_to_fovs(self.get_y_drift,y_ends_lists)
-        keep_in_frame_kernels_output = self.map_to_fovs(self.keep_in_frame_kernels,y_ends_lists,y_drift_list,imported_array_list,orientations_list,padding_y,trench_len_y)
-        valid_y_ends_lists = [item[0] for item in keep_in_frame_kernels_output]
-        valid_orientations_list = [item[1] for item in keep_in_frame_kernels_output]
-        cropped_in_y_list = self.map_to_fovs(self.crop_y,imported_array_list,y_drift_list,valid_y_ends_lists,orientations_list,padding_y,trench_len_y)
+        orientations_list = [item[0] for item in get_manual_orientations_output]
+        drop_first_row_list = [item[1] for item in get_manual_orientations_output]
+        drop_last_row_list = [item[2] for item in get_manual_orientations_output]
+#         orientations,drop_first_row,drop_last_row
+        
+#         orientations_list = self.map_to_fovs(self.get_manual_orientations,trench_edges_y_lists,start_above_lists,end_above_lists,expected_num_rows,\
+#                                              orientation_detection,orientation_on_fail,y_min_edge_dist)
+# get_trench_ends(self,i,trench_edges_y_lists,start_above_lists,end_above_lists,orientations_list,drop_first_row_list,drop_last_row_list,y_min_edge_dist):
 
-        self.plot_y_crop(cropped_in_y_list,imported_array_list,self.fov_list,vertical_spacing,orientations_list)
+        y_ends_lists = self.map_to_fovs(self.get_trench_ends,trench_edges_y_lists,start_above_lists,end_above_lists,orientations_list,drop_first_row_list,drop_last_row_list,y_min_edge_dist)
+        y_drift_list = self.map_to_fovs(self.get_y_drift,y_ends_lists)
+        
+        keep_in_frame_kernels_output = self.map_to_fovs(self.keep_in_frame_kernels,y_ends_lists,y_drift_list,imported_array_list,orientations_list,padding_y,trench_len_y)
+        valid_y_ends_list = [item[0] for item in keep_in_frame_kernels_output]
+        valid_orientations_list = [item[1] for item in keep_in_frame_kernels_output]
+        cropped_in_y_list = self.map_to_fovs(self.crop_y,imported_array_list,y_drift_list,valid_y_ends_list,valid_orientations_list,padding_y,trench_len_y)
+
+        self.plot_y_crop(cropped_in_y_list,imported_array_list,self.fov_list,vertical_spacing,valid_orientations_list)
         return cropped_in_y_list
         
     def plot_y_crop(self,cropped_in_y_list,imported_array_list,fov_list,vertical_spacing,valid_orientations_list):
