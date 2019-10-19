@@ -143,6 +143,11 @@ class kymograph_cluster:
             img_arr = imported_hdf5_handle[self.seg_channel][:] #t x y
             perc_arr = np.percentile(img_arr,y_percentile,axis=2,interpolation='lower')
             y_percentiles_smoothed = self.median_filter_2d(perc_arr,smoothing_kernel_y)
+            
+            min_qth_percentile = y_percentiles_smoothed.min(axis=1)[:, np.newaxis]
+            max_qth_percentile = y_percentiles_smoothed.max(axis=1)[:, np.newaxis]
+            y_percentiles_smoothed = (y_percentiles_smoothed - min_qth_percentile)/(max_qth_percentile - min_qth_percentile)
+            
         return y_percentiles_smoothed
     
     def triangle_threshold(self,img_arr,triangle_nbins,triangle_scaling,triangle_max_threshold,triangle_min_threshold):
@@ -206,34 +211,11 @@ class kymograph_cluster:
         edges_list,start_above_list,end_above_list = self.get_edges_from_mask(trench_mask_y)
         return edges_list,start_above_list,end_above_list
     
-    def remove_out_of_frame(self,top_orientation,trench_edges_y,start_above,end_above):
-        """Takes an array of trench row edges and removes the first/last
-        edge, if that edge does not have a proper partner (i.e. trench row mask
-        takes value True at boundaries of image).
-        
-        Args:
-            edges (array): Array of edges along y-axis.
-            start_above (bool): True if the trench row mask takes value True at the
-            starting edge of the mask.
-            end_above (bool): True if the trench row mask takes value True at the
-            ending edge of the mask.
-        
-        Returns:
-            array: Array of edges along y-axis, corrected for edge pairs that
-            are out of frame.
-        """
-        if end_above:
-            if top_orientation == 0:
-                trench_edges_y = np.array([trench_edges_y.tolist()] + [int(self.metadata['height'])])
-            else:
-                trench_edges_y = trench_edges_y[:-1]
-
+    def repair_out_of_frame(self,trench_edges_y,start_above,end_above):
         if start_above:
-            if top_orientation == 1:
-                trench_edges_y =  np.array([trench_edges_y.tolist()] + [0])
-            else:
-                trench_edges_y = trench_edges_y[1:]
-        
+            trench_edges_y =  np.array([0] + [trench_edges_y.tolist()])
+        if end_above:
+            trench_edges_y = np.array([trench_edges_y.tolist()] + [int(self.metadata['height'])])
         return trench_edges_y
     
     def remove_small_rows(self,edges,min_edge_dist):
@@ -252,40 +234,102 @@ class kymograph_cluster:
         filtered_edges = grouped_edges[row_mask]
         return filtered_edges.flatten()
     
+    def remove_out_of_frame(self,orientations,repaired_trench_edges_y,start_above,end_above):
+        """Takes an array of trench row edges and removes the first/last
+        edge, if that edge does not have a proper partner (i.e. trench row mask
+        takes value True at boundaries of image).
+        
+        Args:
+            edges (array): Array of edges along y-axis.
+            start_above (bool): True if the trench row mask takes value True at the
+            starting edge of the mask.
+            end_above (bool): True if the trench row mask takes value True at the
+            ending edge of the mask.
+        
+        Returns:
+            array: Array of edges along y-axis, corrected for edge pairs that
+            are out of frame.
+        """
+        drop_first_row,drop_last_row = (False,False)
+        if start_above and orientations[0] == 0: #if the top is facing down and is cut
+            drop_first_row = True
+            orientations = orientations[1:]
+            repaired_trench_edges_y = repaired_trench_edges_y[2:]
+        if end_above and orientations[-1] == 1: #if the bottom is facing up and is cut
+            drop_last_row = True
+            orientations = orientations[:-1]
+            repaired_trench_edges_y = repaired_trench_edges_y[:-2]
+        return orientations,drop_first_row,drop_last_row,repaired_trench_edges_y
+    
     def get_manual_orientations(self,trench_edges_y_list,start_above_list,end_above_list,expected_num_rows,top_orientation,orientation_on_fail,y_min_edge_dist):
         trench_edges_y = trench_edges_y_list[0]
         start_above = start_above_list[0]
         end_above = end_above_list[0]
         orientations = []
         
-        trench_edges_y_no_drift = self.remove_out_of_frame(top_orientation,trench_edges_y,start_above,end_above)
-        trench_edges_y_no_drift = self.remove_small_rows(trench_edges_y_no_drift,y_min_edge_dist)
+        repaired_trench_edges_y = self.repair_out_of_frame(trench_edges_y,start_above,end_above)
+        repaired_trench_edges_y = self.remove_small_rows(repaired_trench_edges_y,y_min_edge_dist)
         
-        if trench_edges_y_no_drift.shape[0]//2 == expected_num_rows:
+        if repaired_trench_edges_y.shape[0]//2 == expected_num_rows:
             orientation = top_orientation
-            for row in range(trench_edges_y_list[0].shape[0]//2):
+            for row in range(repaired_trench_edges_y.shape[0]//2):
                 orientations.append(orientation)
                 orientation = (orientation+1)%2
-        elif (trench_edges_y_no_drift.shape[0]//2 < expected_num_rows) and orientation_on_fail is not None:
+            orientations,drop_first_row,drop_last_row,repaired_trench_edges_y = self.remove_out_of_frame(orientations,repaired_trench_edges_y,start_above,end_above)
+                
+        elif (repaired_trench_edges_y.shape[0]//2 < expected_num_rows) and orientation_on_fail is not None:
             orientation = orientation_on_fail
-            trench_edges_y_drift = self.remove_out_of_frame(orientation,trench_edges_y,start_above,end_above)
-            trench_edges_y_drift = self.remove_small_rows(trench_edges_y_drift,y_min_edge_dist)
-            for row in range(trench_edges_y_drift.shape[0]//2):
+            for row in range(repaired_trench_edges_y.shape[0]//2):
                 orientations.append(orientation)
                 orientation = (orientation+1)%2
+            orientations,drop_first_row,drop_last_row,repaired_trench_edges_y = self.remove_out_of_frame(orientations,repaired_trench_edges_y,start_above,end_above)
         else:
             print("Start frame does not have expected number of rows!")
-        return orientations
-    
-    def get_trench_ends(self,trench_edges_y_list,start_above_list,end_above_list,orientations,y_min_edge_dist):
+            
+        return orientations,drop_first_row,drop_last_row
+
+#     def get_manual_orientations(self,trench_edges_y_list,start_above_list,end_above_list,expected_num_rows,top_orientation,orientation_on_fail,y_min_edge_dist):
+#         trench_edges_y = trench_edges_y_list[0]
+#         start_above = start_above_list[0]
+#         end_above = end_above_list[0]
+#         orientations = []
+        
+#         trench_edges_y_no_drift = self.remove_out_of_frame(top_orientation,trench_edges_y,start_above,end_above)
+#         trench_edges_y_no_drift = self.remove_small_rows(trench_edges_y_no_drift,y_min_edge_dist)
+        
+#         if trench_edges_y_no_drift.shape[0]//2 == expected_num_rows:
+#             orientation = top_orientation
+#             for row in range(trench_edges_y_list[0].shape[0]//2):
+#                 orientations.append(orientation)
+#                 orientation = (orientation+1)%2
+#         elif (trench_edges_y_no_drift.shape[0]//2 < expected_num_rows) and orientation_on_fail is not None:
+#             orientation = orientation_on_fail
+#             trench_edges_y_drift = self.remove_out_of_frame(orientation,trench_edges_y,start_above,end_above)
+#             trench_edges_y_drift = self.remove_small_rows(trench_edges_y_drift,y_min_edge_dist)
+#             for row in range(trench_edges_y_drift.shape[0]//2):
+#                 orientations.append(orientation)
+#                 orientation = (orientation+1)%2
+#         else:
+#             print("Start frame does not have expected number of rows!")
+#         return orientations
+
+    def get_trench_ends(self,trench_edges_y_list,start_above_list,end_above_list,orientations,drop_first_row,drop_last_row,y_min_edge_dist):        
         top_orientation = orientations[0]
         
         y_ends_list = []
         
         for t,trench_edges_y in enumerate(trench_edges_y_list):
-            trench_edges_y_repaired = self.remove_out_of_frame(top_orientation,trench_edges_y,start_above_list[t],end_above_list[t])
-            trench_edges_y_repaired = self.remove_small_rows(trench_edges_y_repaired,y_min_edge_dist)
-            grouped_edges = trench_edges_y_repaired.reshape(-1,2) # or,2
+            start_above = start_above_list[t]
+            end_above = end_above_list[t]
+            
+            repaired_trench_edges_y = self.repair_out_of_frame(trench_edges_y,start_above,end_above)
+            repaired_trench_edges_y = self.remove_small_rows(repaired_trench_edges_y,y_min_edge_dist)
+            
+            if (repaired_trench_edges_y.shape[0]//2 > len(orientations)) and drop_first_row:
+                repaired_trench_edges_y = repaired_trench_edges_y[2:]
+            if (repaired_trench_edges_y.shape[0]//2 > len(orientations)) and drop_last_row:
+                repaired_trench_edges_y = repaired_trench_edges_y[:-2]
+            grouped_edges = repaired_trench_edges_y.reshape(-1,2) # or,2
             y_ends = []
             for edges,orientation in enumerate(orientations):
                 y_ends.append(grouped_edges[edges,orientation])
@@ -293,15 +337,32 @@ class kymograph_cluster:
             y_ends_list.append(y_ends)
         return y_ends_list
     
+#     def get_trench_ends(self,trench_edges_y_list,start_above_list,end_above_list,orientations,y_min_edge_dist):
+#         top_orientation = orientations[0]
+        
+#         y_ends_list = []
+        
+#         for t,trench_edges_y in enumerate(trench_edges_y_list):
+#             trench_edges_y_repaired = self.remove_out_of_frame(top_orientation,trench_edges_y,start_above_list[t],end_above_list[t])
+#             trench_edges_y_repaired = self.remove_small_rows(trench_edges_y_repaired,y_min_edge_dist)
+#             grouped_edges = trench_edges_y_repaired.reshape(-1,2) # or,2
+#             y_ends = []
+#             for edges,orientation in enumerate(orientations):
+#                 y_ends.append(grouped_edges[edges,orientation])
+#             y_ends = np.array(y_ends)
+#             y_ends_list.append(y_ends)
+#         return y_ends_list
+
+
     def get_y_drift(self,y_ends_list):
         """Given a list of midpoints, computes the average drift in y for every timepoint.
 
         Args:
-            y_midpoints (list): A  list of the form [time_list,[midpoint_array]] containing
-            the trench row midpoints.
+            y_midpoints_list (list): A list containing, for each fov, a list of the form [time_list,[midpoint_array]]
+            containing the trench row midpoints.
 
         Returns:
-            list: A nested list of the form [time_list,[y_drift_int]].
+            list: A nested list of the form [time_list,[y_drift_int]] for fov i.
         """
         y_drift = []
         for t in range(len(y_ends_list)-1):
@@ -356,8 +417,10 @@ class kymograph_cluster:
             if edge_in_bounds:
                 valid_y_ends_list.append([y_end[j] for y_end in y_ends_list])
                 valid_orientations.append(orientation)
-                
-        return valid_y_ends_list,valid_orientations
+        
+        valid_y_ends = np.array(valid_y_ends_list).T # t,edge
+     
+        return valid_y_ends,valid_orientations
     
     def get_ends_and_orientations(self,fov_idx,edges_futures,expected_num_rows,top_orientation,orientation_on_fail,y_min_edge_dist,padding_y,trench_len_y):
         
@@ -377,12 +440,12 @@ class kymograph_cluster:
             start_above_list += edges_futures[j][1][first_idx:last_idx+1]
             end_above_list += edges_futures[j][2][first_idx:last_idx+1]
             
-        orientations = self.get_manual_orientations(trench_edges_y_list,start_above_list,end_above_list,expected_num_rows,top_orientation,orientation_on_fail,y_min_edge_dist)
-        y_ends_list = self.get_trench_ends(trench_edges_y_list,start_above_list,end_above_list,orientations,y_min_edge_dist)
+        orientations,drop_first_row,drop_last_row = self.get_manual_orientations(trench_edges_y_list,start_above_list,end_above_list,expected_num_rows,top_orientation,orientation_on_fail,y_min_edge_dist)
+        y_ends_list = self.get_trench_ends(trench_edges_y_list,start_above_list,end_above_list,orientations,drop_first_row,drop_last_row,y_min_edge_dist)
         y_drift = self.get_y_drift(y_ends_list)
-        valid_y_ends_list,valid_orientations = self.keep_in_frame_kernels(y_ends_list,y_drift,orientations,padding_y,trench_len_y)
+        valid_y_ends,valid_orientations = self.keep_in_frame_kernels(y_ends_list,y_drift,orientations,padding_y,trench_len_y)
         
-        return y_drift,valid_orientations,valid_y_ends_list
+        return y_drift,valid_orientations,valid_y_ends
     
     def crop_y(self,file_idx,drift_orientation_and_initend_future,padding_y,trench_len_y):
         """Performs cropping of the images in the y-dimension.
@@ -413,8 +476,10 @@ class kymograph_cluster:
         first_idx,last_idx = (timepoint_indices[0],timepoint_indices[-1])
         
         y_drift = drift_orientation_and_initend_future[0][first_idx:last_idx+1]
-        valid_orientations,valid_y_ends_list = drift_orientation_and_initend_future[1:]
-        drift_corrected_edges = np.add.outer(y_drift,valid_y_ends_list[0])
+        valid_orientations,valid_y_ends = drift_orientation_and_initend_future[1:]
+#         valid_orientations,valid_y_ends_list = drift_orientation_and_initend_future[1:]
+        drift_corrected_edges = np.add.outer(y_drift,valid_y_ends[0])
+#         drift_corrected_edges = np.add.outer(y_drift,valid_y_ends_list[0])
         
         channel_arr_list = []
         for c,channel in enumerate(self.all_channels):
@@ -831,7 +896,8 @@ class kymograph_cluster:
         df = pd.DataFrame(pd_output,columns=["fov","row","trench","timepoints","File Index","Image Index","time (s)","lane orientation","y (local)","x (local)","y (global)","x (global)"])
         df = df.astype({"fov":int,"row":int,"trench":int,"timepoints":int,"File Index":int,"Image Index":int,"time (s)":float,"lane orientation":str,"y (local)":float,"x (local)":float,\
                         "y (global)":float,"x (global)":float})
-        return df
+        temp_meta_handle = pandas_hdf5_handler(self.kymographpath + "/temp_metadata_" + str(fov_idx) + ".hdf5")
+        temp_meta_handle.write_df("temp",df)
 
     def generate_kymographs(self,dask_controller):
         writedir(self.kymographpath,overwrite=True)
@@ -984,9 +1050,23 @@ class kymograph_cluster:
         fovdf = fovdf.loc[(slice(None), slice(self.t_range[0],self.t_range[1])),:]
         fov_list = fovdf.index.get_level_values("fov").unique().values        
         
-        coord_futures = [dask_controller.futures["Coords: " + str(fov_idx)] for fov_idx in fov_list]
-        coord_list = dask_controller.daskclient.gather(coord_futures, errors='skip')
-        df_out = pd.concat(coord_list)
+        completed_list = []
+        for filename in os.listdir(self.kymographpath):
+            if "temp_metadata" in filename:
+                filename_list = filename.split("_")
+                endstr = filename_list[-1]
+                idx = int(endstr.split(".")[0])             
+                completed_list.append(idx)
+                
+        df_list = []
+        for fov_idx in completed_list:
+            temp_meta_path = self.kymographpath + "/temp_metadata_" + str(fov_idx) + ".hdf5"
+            temp_meta_handle = pandas_hdf5_handler(temp_meta_path)
+            temp_df = temp_meta_handle.read_df("temp")
+            df_list.append(temp_df)
+            os.remove(temp_meta_path)
+        
+        df_out = pd.concat(df_list)
         df_out = df_out.set_index(["fov","row","trench","timepoints"], drop=True, append=False, inplace=False)
         
         idx_df = df_out.groupby(["fov","row","trench"]).size().reset_index().drop(0,axis=1).reset_index()
@@ -1078,6 +1158,7 @@ class kymograph_cluster:
         dask_controller.futures["Kymographs Cleaned Up"] = future
 
     def post_process(self,dask_controller):
+        dask_controller.daskclient.restart()
         self.collect_metadata(dask_controller)
         self.reorg_all_kymographs(dask_controller)
         
@@ -1203,6 +1284,10 @@ class kymograph_multifov(multifov):
         imported_array = imported_array_list[i]
         y_percentiles = np.percentile(imported_array[0],y_percentile,axis=1,interpolation='lower')
         y_percentiles_smoothed = self.median_filter_2d(y_percentiles,smoothing_kernel_y)
+        # Normalize (scale by range and subtract minimum) to make scaling of thresholds make more sense
+        min_qth_percentile = y_percentiles_smoothed.min(axis=0)
+        max_qth_percentile = y_percentiles_smoothed.max(axis=0)
+        y_percentiles_smoothed = (y_percentiles_smoothed - min_qth_percentile)/(max_qth_percentile - min_qth_percentile)
         return y_percentiles_smoothed
     
     def triangle_threshold(self,img_arr,triangle_nbins,triangle_scaling,triangle_max_threshold,triangle_min_threshold):
@@ -1270,34 +1355,11 @@ class kymograph_multifov(multifov):
         trench_edges_y_list,start_above_list,end_above_list = self.get_edges_from_mask(trench_mask_y)
         return trench_edges_y_list,start_above_list,end_above_list
     
-    def remove_out_of_frame(self,top_orientation,trench_edges_y,start_above,end_above):
-        """Takes an array of trench row edges and removes the first/last
-        edge, if that edge does not have a proper partner (i.e. trench row mask
-        takes value True at boundaries of image).
-        
-        Args:
-            edges (array): Array of edges along y-axis.
-            start_above (bool): True if the trench row mask takes value True at the
-            starting edge of the mask.
-            end_above (bool): True if the trench row mask takes value True at the
-            ending edge of the mask.
-        
-        Returns:
-            array: Array of edges along y-axis, corrected for edge pairs that
-            are out of frame.
-        """
-        if end_above:
-            if top_orientation == 0:
-                trench_edges_y = np.array([trench_edges_y.tolist()] + [int(self.metadata['height'])])
-            else:
-                trench_edges_y = trench_edges_y[:-1]
-
+    def repair_out_of_frame(self,trench_edges_y,start_above,end_above):
         if start_above:
-            if top_orientation == 1:
-                trench_edges_y =  np.array([trench_edges_y.tolist()] + [0])
-            else:
-                trench_edges_y = trench_edges_y[1:]
-        
+            trench_edges_y =  np.array([0] + [trench_edges_y.tolist()])
+        if end_above:
+            trench_edges_y = np.array([trench_edges_y.tolist()] + [int(self.metadata['height'])])
         return trench_edges_y
     
     def remove_small_rows(self,edges,min_edge_dist):
@@ -1316,6 +1378,68 @@ class kymograph_multifov(multifov):
         filtered_edges = grouped_edges[row_mask]
         return filtered_edges.flatten()
     
+    def remove_out_of_frame(self,orientations,repaired_trench_edges_y,start_above,end_above):
+        """Takes an array of trench row edges and removes the first/last
+        edge, if that edge does not have a proper partner (i.e. trench row mask
+        takes value True at boundaries of image).
+        
+        Args:
+            edges (array): Array of edges along y-axis.
+            start_above (bool): True if the trench row mask takes value True at the
+            starting edge of the mask.
+            end_above (bool): True if the trench row mask takes value True at the
+            ending edge of the mask.
+        
+        Returns:
+            array: Array of edges along y-axis, corrected for edge pairs that
+            are out of frame.
+        """
+        drop_first_row,drop_last_row = (False,False)
+        if start_above and orientations[0] == 0: #if the top is facing down and is cut
+            drop_first_row = True
+            orientations = orientations[1:]
+            repaired_trench_edges_y = repaired_trench_edges_y[2:]
+        if end_above and orientations[-1] == 1: #if the bottom is facing up and is cut
+            drop_last_row = True
+            orientations = orientations[:-1]
+            repaired_trench_edges_y = repaired_trench_edges_y[:-2]
+        return orientations,drop_first_row,drop_last_row,repaired_trench_edges_y
+        
+#         if start_above and orientations[0] == 0: #if the top is facing down and is cut
+#             orientations = orientations[1:]
+#             repaired_trench_edges_y = repaired_trench_edges_y[2:]
+#         if end_above and orientations[-1] == 1: #if the bottom is facing up and is cut
+#             orientations = orientations[:-1]
+#             repaired_trench_edges_y = repaired_trench_edges_y[:-2]
+#         return orientations,repaired_trench_edges_y
+    
+#     def assign_orientation(self,orientations,repaired_trench_edges_y,start_above,end_above):
+#         """Takes an array of trench row edges and removes the first/last
+#         edge, if that edge does not have a proper partner (i.e. trench row mask
+#         takes value True at boundaries of image).
+        
+#         Args:
+#             edges (array): Array of edges along y-axis.
+#             start_above (bool): True if the trench row mask takes value True at the
+#             starting edge of the mask.
+#             end_above (bool): True if the trench row mask takes value True at the
+#             ending edge of the mask.
+        
+#         Returns:
+#             array: Array of edges along y-axis, corrected for edge pairs that
+#             are out of frame.
+#         """
+#         drop_first_row,drop_last_row = (False,False)
+#         if start_above and orientations[0] == 0: #if the top is facing down and is cut
+#             drop_first_row = True
+#             orientations = orientations[1:]
+#             repaired_trench_edges_y = repaired_trench_edges_y[2:]
+#         if end_above and orientations[-1] == 1: #if the bottom is facing up and is cut
+#             drop_last_row = True
+#             orientations = orientations[:-1]
+#             repaired_trench_edges_y = repaired_trench_edges_y[:-2]
+#         return orientations,drop_first_row,drop_last_row,repaired_trench_edges_y
+    
     def get_manual_orientations(self,i,trench_edges_y_lists,start_above_lists,end_above_lists,\
                                 expected_num_rows,top_orientation,orientation_on_fail,y_min_edge_dist):
         trench_edges_y = trench_edges_y_lists[i][0]
@@ -1323,44 +1447,58 @@ class kymograph_multifov(multifov):
         end_above = end_above_lists[i][0]
         orientations = []
         
-        trench_edges_y_no_drift = self.remove_out_of_frame(top_orientation,trench_edges_y,start_above,end_above)
-        trench_edges_y_no_drift = self.remove_small_rows(trench_edges_y_no_drift,y_min_edge_dist)
+        repaired_trench_edges_y = self.repair_out_of_frame(trench_edges_y,start_above,end_above)
+        repaired_trench_edges_y = self.remove_small_rows(repaired_trench_edges_y,y_min_edge_dist)
         
-        if trench_edges_y_no_drift.shape[0]//2 == expected_num_rows:
+#         trench_edges_y_no_drift = self.remove_out_of_frame(top_orientation,trench_edges_y,start_above,end_above)
+#         trench_edges_y_no_drift = self.remove_small_rows(trench_edges_y_no_drift,y_min_edge_dist)
+        
+        if repaired_trench_edges_y.shape[0]//2 == expected_num_rows:
             orientation = top_orientation
-            for row in range(trench_edges_y_no_drift.shape[0]//2):
+            for row in range(repaired_trench_edges_y.shape[0]//2):
                 orientations.append(orientation)
                 orientation = (orientation+1)%2
-        elif (trench_edges_y_no_drift.shape[0]//2 < expected_num_rows) and orientation_on_fail is not None:
+            orientations,drop_first_row,drop_last_row,repaired_trench_edges_y = self.remove_out_of_frame(orientations,repaired_trench_edges_y,start_above,end_above)
+                
+        elif (repaired_trench_edges_y.shape[0]//2 < expected_num_rows) and orientation_on_fail is not None:
             orientation = orientation_on_fail
-            trench_edges_y_drift = self.remove_out_of_frame(orientation,trench_edges_y,start_above,end_above)
-            trench_edges_y_drift = self.remove_small_rows(trench_edges_y_drift,y_min_edge_dist)
-            for row in range(trench_edges_y_drift.shape[0]//2):
+            for row in range(repaired_trench_edges_y.shape[0]//2):
                 orientations.append(orientation)
                 orientation = (orientation+1)%2
+            orientations,drop_first_row,drop_last_row,repaired_trench_edges_y = self.remove_out_of_frame(orientations,repaired_trench_edges_y,start_above,end_above)
         else:
             print("Start frame does not have expected number of rows!")
-        return orientations
+            
+        return orientations,drop_first_row,drop_last_row
     
-    def get_trench_ends(self,i,trench_edges_y_lists,start_above_lists,end_above_lists,orientations_list,y_min_edge_dist):
+    def get_trench_ends(self,i,trench_edges_y_lists,start_above_lists,end_above_lists,orientations_list,drop_first_row_list,drop_last_row_list,y_min_edge_dist):
         trench_edges_y_list = trench_edges_y_lists[i]
         start_above_list = start_above_lists[i]
         end_above_list = end_above_lists[i]
         orientations = orientations_list[i]
+        drop_first_row,drop_last_row = (drop_first_row_list[i],drop_last_row_list[i])
+        
         top_orientation = orientations[0]
         
         y_ends_list = []
         
         for t,trench_edges_y in enumerate(trench_edges_y_list):
-            trench_edges_y_repaired = self.remove_out_of_frame(top_orientation,trench_edges_y,start_above_list[t],end_above_list[t])
-            trench_edges_y_repaired = self.remove_small_rows(trench_edges_y_repaired,y_min_edge_dist)
-            grouped_edges = trench_edges_y_repaired.reshape(-1,2) # or,2
+            start_above = start_above_list[t]
+            end_above = end_above_list[t]
+            
+            repaired_trench_edges_y = self.repair_out_of_frame(trench_edges_y,start_above,end_above)
+            repaired_trench_edges_y = self.remove_small_rows(repaired_trench_edges_y,y_min_edge_dist)
+            
+            if (repaired_trench_edges_y.shape[0]//2 > len(orientations)) and drop_first_row:
+                repaired_trench_edges_y = repaired_trench_edges_y[2:]
+            if (repaired_trench_edges_y.shape[0]//2 > len(orientations)) and drop_last_row:
+                repaired_trench_edges_y = repaired_trench_edges_y[:-2]
+            grouped_edges = repaired_trench_edges_y.reshape(-1,2) # or,2
             y_ends = []
             for edges,orientation in enumerate(orientations):
                 y_ends.append(grouped_edges[edges,orientation])
             y_ends = np.array(y_ends)
             y_ends_list.append(y_ends)
-        
         return y_ends_list
 
     def get_y_drift(self,i,y_ends_lists):
@@ -1408,7 +1546,7 @@ class kymograph_multifov(multifov):
         y_drift = y_drift_list[i]
         max_y_dim = imported_array_list[i].shape[1]
         orientations = orientations_list[i]
-
+        
         max_drift,min_drift = np.max(y_drift),np.min(y_drift)
         
         valid_y_ends_list = []
@@ -1431,8 +1569,10 @@ class kymograph_multifov(multifov):
             if edge_in_bounds:
                 valid_y_ends_list.append([y_end[j] for y_end in y_ends_list])
                 valid_orientations.append(orientation)
-                
-        return valid_y_ends_list,valid_orientations
+        
+        valid_y_ends = np.array(valid_y_ends_list).T # t,edge
+     
+        return valid_y_ends,valid_orientations
 
 # 
 #         valid_edge_mask = []
@@ -1463,7 +1603,7 @@ class kymograph_multifov(multifov):
 #         trench_row_num = (np.median(edge_num_list).astype(int))//2
 #         return trench_row_num
 
-    def crop_y(self,i,imported_array_list,y_drift_list,valid_y_ends_lists,orientations_list,padding_y,trench_len_y):
+    def crop_y(self,i,imported_array_list,y_drift_list,valid_y_ends_list,valid_orientations_list,padding_y,trench_len_y):
         """Performs cropping of the images in the y-dimension.
         
         Args:
@@ -1482,17 +1622,17 @@ class kymograph_multifov(multifov):
         """
         imported_array = imported_array_list[i]
         y_drift = y_drift_list[i]
-        valid_y_ends_list = valid_y_ends_lists[i]
-        orientations = orientations_list[i]
+        valid_y_ends = valid_y_ends_list[i]
+        valid_orientations = valid_orientations_list[i]
 
-        drift_corrected_edges = np.add.outer(y_drift,valid_y_ends_list[0])
+        drift_corrected_edges = np.add.outer(y_drift,valid_y_ends[0])
         time_list = []
 
         for t in range(imported_array.shape[3]):
             trench_ends_y = drift_corrected_edges[t]
             row_list = []
 
-            for r,orientation in enumerate(orientations):
+            for r,orientation in enumerate(valid_orientations):
                 trench_end = trench_ends_y[r]
                 if orientation == 0:                 
                     upper = max(trench_end-padding_y,0)
@@ -1517,38 +1657,38 @@ class kymograph_multifov(multifov):
             cropped_in_y = np.moveaxis(cropped_in_y,(0,1,2,3,4),(4,0,1,2,3))
             return cropped_in_y
         
-    def crop_trenches_in_y(self,imported_array_list):
-        """Master function for cropping the input hdf5 file in the y-dimension.
+#     def crop_trenches_in_y(self,imported_array_list):
+#         """Master function for cropping the input hdf5 file in the y-dimension.
         
-        Args:
-            imported_array_list (list): List containing, for each fov entry, a numpy array containing
-            the corresponding hdf5 file image data.
+#         Args:
+#             imported_array_list (list): List containing, for each fov entry, a numpy array containing
+#             the corresponding hdf5 file image data.
         
-        Returns:
-            list: List containing, for each fov entry, a y-cropped numpy array of shape (rows,channels,x,y,t).
-        """        
-        y_percentiles_smoothed_list = self.map_to_fovs(self.get_smoothed_y_percentiles,imported_array_list,\
-                                                       self.y_percentile,self.smoothing_kernel_y)
+#         Returns:
+#             list: List containing, for each fov entry, a y-cropped numpy array of shape (rows,channels,x,y,t).
+#         """        
+#         y_percentiles_smoothed_list = self.map_to_fovs(self.get_smoothed_y_percentiles,imported_array_list,\
+#                                                        self.y_percentile,self.smoothing_kernel_y)
         
-        get_trench_edges_y_output = self.map_to_fovs(self.get_trench_edges_y,y_percentiles_smoothed_list,self.triangle_nbins,self.triangle_scaling,self.triangle_max_threshold,self.triangle_min_threshold)
-        trench_edges_y_lists = [item[0] for item in get_trench_edges_y_output]
-        start_above_lists = [item[1] for item in get_trench_edges_y_output]
-        end_above_lists = [item[2] for item in get_trench_edges_y_output]
+#         get_trench_edges_y_output = self.map_to_fovs(self.get_trench_edges_y,y_percentiles_smoothed_list,self.triangle_nbins,self.triangle_scaling,self.triangle_max_threshold,self.triangle_min_threshold)
+#         trench_edges_y_lists = [item[0] for item in get_trench_edges_y_output]
+#         start_above_lists = [item[1] for item in get_trench_edges_y_output]
+#         end_above_lists = [item[2] for item in get_trench_edges_y_output]
                 
-        orientations_list = self.map_to_fovs(self.get_manual_orientations,trench_edges_y_lists,start_above_lists,end_above_lists,self.expected_num_rows,\
-                                             self.orientation_detection,self.orientation_on_fail,self.y_min_edge_dist)
+#         orientations_list = self.map_to_fovs(self.get_manual_orientations,trench_edges_y_lists,start_above_lists,end_above_lists,self.expected_num_rows,\
+#                                              self.orientation_detection,self.orientation_on_fail,self.y_min_edge_dist)
         
-        y_ends_lists = self.map_to_fovs(self.get_trench_ends,trench_edges_y_lists,start_above_lists,end_above_lists,orientations_list,self.y_min_edge_dist)
+#         y_ends_lists = self.map_to_fovs(self.get_trench_ends,trench_edges_y_lists,start_above_lists,end_above_lists,orientations_list,self.y_min_edge_dist)
 
-        y_drift_list = self.map_to_fovs(self.get_y_drift,y_ends_lists)
+#         y_drift_list = self.map_to_fovs(self.get_y_drift,y_ends_lists)
         
-        keep_in_frame_kernels_output = self.map_to_fovs(self.keep_in_frame_kernels,y_ends_lists,y_drift_list,imported_array_list,orientations_list,self.padding_y,self.trench_len_y)
-        valid_y_ends_lists = [item[0] for item in keep_in_frame_kernels_output]
-        valid_orientations_list = [item[1] for item in keep_in_frame_kernels_output]
+#         keep_in_frame_kernels_output = self.map_to_fovs(self.keep_in_frame_kernels,y_ends_lists,y_drift_list,imported_array_list,orientations_list,self.padding_y,self.trench_len_y)
+#         valid_y_ends_lists = [item[0] for item in keep_in_frame_kernels_output]
+#         valid_orientations_list = [item[1] for item in keep_in_frame_kernels_output]
         
-        cropped_in_y_list = self.map_to_fovs(self.crop_y,imported_array_list,y_drift_list,valid_y_ends_lists,orientations_list,self.padding_y,self.trench_len_y)
+#         cropped_in_y_list = self.map_to_fovs(self.crop_y,imported_array_list,y_drift_list,valid_y_ends_lists,orientations_list,self.padding_y,self.trench_len_y)
         
-        return cropped_in_y_list
+#         return cropped_in_y_list
     
     def get_smoothed_x_percentiles(self,i,cropped_in_y_list,x_percentile,background_kernel_x,smoothing_kernel_x):
         """Summary
