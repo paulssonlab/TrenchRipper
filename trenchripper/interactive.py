@@ -33,13 +33,15 @@ class kymograph_interactive(kymograph_multifov):
         timepoints_len = self.metadata["num_frames"]
         return channels,fov_list,timepoints_len
         
-    def view_image(self,fov_idx,t,channel):
+    def view_image(self,fov_idx,t,channel,invert):
         img_entry = self.metadf.loc[fov_idx,t]
         file_idx = int(img_entry["File Index"])
         img_idx = int(img_entry["Image Index"])
         
         with h5py.File(self.headpath + "/hdf5/hdf5_" + str(file_idx) + ".hdf5", "r") as infile:
             img_arr = infile[channel][img_idx,:,:]
+        if invert:
+            img_arr = sk.util.invert(img_arr)
         plt.imshow(img_arr)
 
     def preview_y_precentiles(self,imported_array_list, y_percentile, smoothing_kernel_y_dim_0,\
@@ -327,6 +329,7 @@ class kymograph_interactive(kymograph_multifov):
     def process_results(self):
         self.final_params["All Channels"] = self.all_channels
         self.final_params["Time Range"] = self.t_range
+        self.final_params["Invert"] = self.invert
         
         for key,value in self.final_params.items():
             print(key + " " + str(value))

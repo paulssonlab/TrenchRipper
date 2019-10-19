@@ -258,18 +258,18 @@ class fluo_segmentation_cluster(fluo_segmentation):
         self.meta_handle = pandas_hdf5_handler(self.metapath)
 
     def generate_segmentation(self,file_idx):
+        with h5py.File(self.kymographpath + "/kymograph_" + str(file_idx) + ".hdf5","r") as input_file:
+            input_data = input_file[self.seg_channel]
+            trench_output = []
+            for trench_idx in range(input_data.shape[0]):
+                trench_array = input_data[trench_idx]
+                trench_array = self.segment(trench_array)
+                trench_output.append(trench_array[np.newaxis])
+                del trench_array
+        trench_output = np.concatenate(trench_output,axis=0)
         with h5py.File(self.fluorsegmentationpath + "/segmentation_" + str(file_idx) + ".hdf5", "w") as h5pyfile:
-            with h5py.File(self.kymographpath + "/kymograph_" + str(file_idx) + ".hdf5","r") as input_file:
-                input_data = input_file[self.seg_channel]
-                trench_output = []
-                for trench_idx in range(input_data.shape[0]):
-                    trench_array = input_data[trench_idx]
-                    trench_array = self.segment(trench_array)
-                    trench_output.append(trench_array[np.newaxis])
-                    del trench_array
-            trench_output = np.concatenate(trench_output,axis=0)
             hdf5_dataset = h5pyfile.create_dataset("data", data=trench_output, dtype=bool)
-            return "Done"
+        return "Done"
 
     def dask_segment(self,dask_controller):
         writedir(self.fluorsegmentationpath,overwrite=True)
@@ -278,7 +278,7 @@ class fluo_segmentation_cluster(fluo_segmentation):
         kymodf = self.meta_handle.read_df("kymograph",read_metadata=True)
         file_list = kymodf["File Index"].unique().tolist()
         num_file_jobs = len(file_list)
-        
+                
         random_priorities = np.random.uniform(size=(num_file_jobs,))
         for k,file_idx in enumerate(file_list):
             priority = random_priorities[k]
