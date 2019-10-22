@@ -704,7 +704,7 @@ class phase_segmentation_cluster(phase_segmentation):
                 seg_props[['min_row', 'min_col', 'max_row', 'max_col']] = pd.DataFrame(seg_props['bbox'].tolist(), index=seg_props.index)
                 seg_props = seg_props.drop("bbox", axis=1)
             if "centroid" in props_to_grab:
-                seg_props[['centx', 'centy']] = pd.DataFrame(seg_props['centroid'].tolist(), index=seg_props.index)
+                seg_props[['centy','centx']] = pd.DataFrame(seg_props['centroid'].tolist(), index=seg_props.index)
                 seg_props = seg_props.drop("centroid", axis=1)
             seg_props["trench_loadings"] = trench_loading
             seg_props["file_trench_index"] = trench_idx
@@ -785,7 +785,7 @@ class phase_segmentation_cluster(phase_segmentation):
 #                 dask_controller.futures["Cell Props %d: " % file_idx] = dask_controller.daskclient.submit(self.save_cell_props_to_file, file_idx, dataframes_future)
 #                 dask_controller.futures["Cell Props %d: " % file_idx] = dask_controller.daskclient.submit(self.extract_cell_data, file_idx, times, global_trench_indices, trench_loadings, props_to_grab, metadata, random_priorities[k, 0], priority=random_priorities[k, 0])
     
-                dask_controller.futures["Cell Props %d: " % file_idx] = dask_controller.daskclient.submit(self.extract_cell_data, file_idx, trench_future, times, global_trench_indices, trench_loadings, props_to_grab, metadata, priority=random_priorities[k, 0])
+                dask_controller.futures["Cell Props %d: " % file_idx] = dask_controller.daskclient.submit(self.extract_cell_data, file_idx, trench_future, times, global_trench_indices, trench_loadings, props_to_grab, metadata, priority=random_priorities[k, 1]*8)
     
     def extract_cell_data(self, file_idx, segmented_mask_array, times, global_trench_indices, trench_loadings, props_to_grab, metadata=None):
         with HDFStore(os.path.join(self.phasedatapath, "data_%d.h5" % file_idx)) as store:
