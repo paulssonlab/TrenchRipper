@@ -526,7 +526,6 @@ class kymograph_cluster:
         Returns:
             array: A smoothed and background subtracted percentile array of shape (rows,x,t)
         """
-        
         channel_arr_list,_ = self.crop_y(file_idx,drift_orientation_and_initend_future,padding_y,trench_len_y)
         cropped_in_y = channel_arr_list[0]
 #         cropped_in_y = y_crop_future[0][0] # t x row x y x x     # (24, 1, 330, 2048)   
@@ -578,8 +577,8 @@ class kymograph_cluster:
         """
 
         otsu_threshold = sk.filters.threshold_otsu(x_percentiles_t[:,np.newaxis],nbins=otsu_nbins)*otsu_scaling
-        x_mask = x_percentiles_t<otsu_threshold
-        #x_mask = x_percentiles_t>otsu_threshold
+#         x_mask = x_percentiles_t<otsu_threshold
+        x_mask = x_percentiles_t>otsu_threshold
         midpoints = self.get_midpoints_from_mask(x_mask)
         return midpoints
     
@@ -1754,8 +1753,8 @@ class kymograph_multifov(multifov):
             array: array of trench midpoint x positions.
         """
         otsu_threshold = sk.filters.threshold_otsu(x_percentiles_t[:,np.newaxis],nbins=otsu_nbins)*otsu_scaling
-        x_mask = x_percentiles_t<otsu_threshold
-        #x_mask = x_percentiles_t>otsu_threshold
+#         x_mask = x_percentiles_t<otsu_threshold
+        x_mask = x_percentiles_t>otsu_threshold
         midpoints = self.get_midpoints_from_mask(x_mask)
         return midpoints,otsu_threshold
     
