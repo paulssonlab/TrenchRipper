@@ -691,6 +691,7 @@ class phase_segmentation_cluster(phase_segmentation):
         for region in regionprops:
             for prop in props_to_grab:
                 props_dict[prop].append(region[prop])
+        del regionprops
         return props_dict
     
     def get_seg_prop_dataframe(self, image, props_to_grab, trench_loading, trench_idx, global_trench_index, time_s):
@@ -819,4 +820,5 @@ class phase_segmentation_cluster(phase_segmentation):
                         else:
                             store.append('metrics', seg_props)
                         del seg_props
+            del segmented_mask_array
         return "Done"
