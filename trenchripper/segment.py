@@ -747,10 +747,11 @@ class phase_segmentation_cluster(phase_segmentation):
                 times = kymodf.loc[file_idx, "time (s)"]
                 global_trench_indices = kymodf.loc[file_idx, "trenchid"]
                 trench_loadings = kymodf.loc[file_idx, "Trench Loading"]
-                trench_future = dask_controller.daskclient.submit(self.load_trench_array_list, self.phasesegmentationpath + "/segmentation_", file_idx, "data", False, priority=random_priorities[k, 0])
-                dask_controller.futures["Cell Props %d: " % file_idx] = dask_controller.daskclient.submit(self.extract_cell_data, file_idx, trench_future, times, global_trench_indices, trench_loadings, props_to_grab, metadata, priority=random_priorities[k, 1]*8)
+                # trench_future = dask_controller.daskclient.submit(self.load_trench_array_list, self.phasesegmentationpath + "/segmentation_", file_idx, "data", False, priority=random_priorities[k, 0])
+                dask_controller.futures["Cell Props %d: " % file_idx] = dask_controller.daskclient.submit(self.extract_cell_data, file_idx, times, global_trench_indices, trench_loadings, props_to_grab, metadata, priority=random_priorities[k, 1]*8)
     
-    def extract_cell_data(self, file_idx, segmented_mask_array, times, global_trench_indices, trench_loadings, props_to_grab, metadata=None):
+    def extract_cell_data(self, file_idx, times, global_trench_indices, trench_loadings, props_to_grab, metadata=None):
+        segmented_mask_array = self.load_trench_array_list(self.phasesegmentationpath + "/segmentation_", file_idx, "data", False,)
         with HDFStore(os.path.join(self.phasedatapath, "data_%d.h5" % file_idx)) as store:
             if "/metrics" in store.keys():
                 store.remove("/metrics")
