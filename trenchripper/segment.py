@@ -7,6 +7,7 @@ import pickle
 import shutil
 import cv2
 import pandas as pd
+from sets import Set
 
 from skimage import measure,feature,segmentation,future,util,morphology,filters
 from .utils import kymo_handle,pandas_hdf5_handler,writedir
@@ -595,6 +596,7 @@ class phase_segmentation_cluster(phase_segmentation):
         self.metapath = headpath + "/metadata.hdf5"
         self.meta_handle = pandas_hdf5_handler(self.metapath)
         self.bit_max = None
+        self.persisted_futures = None
 
     def generate_segmentation(self,future_8bit):
         with worker_client() as client:
@@ -635,13 +637,14 @@ class phase_segmentation_cluster(phase_segmentation):
         trench_output = np.concatenate(trench_output,axis=0)
         return trench_output
 
-    def dask_segment(self,dask_controller):
-
-        writedir(self.phasesegmentationpath,overwrite=True)
+    def dask_segment(self,dask_controller, file_list=None, overwrite=True):
+        writedir(self.phasesegmentationpath,overwrite=overwrite)
         dask_controller.futures = {}
         
-        kymodf = self.meta_handle.read_df("kymograph",read_metadata=True)
-        file_list = kymodf["File Index"].unique().tolist()
+        if file_list is None:
+            kymodf = self.meta_handle.read_df("kymograph",read_metadata=True)
+            file_list = kymodf["File Index"].unique().tolist()
+        
         num_file_jobs = len(file_list)
 
 #         random_priorities = np.random.uniform(size=(num_file_jobs,))
@@ -664,12 +667,13 @@ class phase_segmentation_cluster(phase_segmentation):
             
         
     
-    def dask_characterize_trench_loading(self, dask_controller):
+    def dask_characterize_trench_loading(self, dask_controller, file_list=None):
         dask_controller.futures = {}
         dask_controller.futures["Trench Loading"] = []
         
-        kymodf = self.meta_handle.read_df("kymograph",read_metadata=True)
-        file_list = kymodf["File Index"].unique().tolist()
+        if file_list is None:
+            kymodf = self.meta_handle.read_df("kymograph",read_metadata=True)
+            file_list = kymodf["File Index"].unique().tolist()
         num_file_jobs = len(file_list)
         
         random_priorities = np.random.uniform(size=(num_file_jobs,2))
@@ -694,6 +698,14 @@ class phase_segmentation_cluster(phase_segmentation):
         del regionprops
         return props_dict
     
+    def persist_futures(self, sleep_time=900):
+        if self.persisted_futures is None:
+            self.persisted_futures = Set([])
+        for file_idx, (key, item) in enumerate(self.daskcontroller.futures.items()):
+            if item.status == "finished":
+                self.persisted_futures |= file_idx
+        sleep(sleep_time)
+    
     def get_seg_prop_dataframe(self, image, props_to_grab, trench_loading, trench_idx, global_trench_index, time_s):
         seg_props = sk.measure.regionprops(image,cache=False)
         if len(seg_props) > 0:
@@ -714,111 +726,59 @@ class phase_segmentation_cluster(phase_segmentation):
             return seg_props
         else:
             return pd.DataFrame()
-        
-#     def get_seg_prop_dataframe_map(flattened_array_future, [props_to_grab]*len(flattened_array_future), list(trench_loadings) , trench_indices, list(global_trench_indices), list(times)):
-#         with worker_client() as client:
-#             priority = np.random.uniform() + 5
-#             dataframe_futures = client.map(self.get_seg_prop_dataframe, flattened_array_future.result(), props_to_grab_list, trench_loadings, trench_indices, global_trench_indices, times, priority)
-#         return dataframe_futures
-        
     
-#     def save_cell_props_to_file(self, file_idx, seg_props):
-#         with HDFStore(os.path.join(self.phasedatapath, "data_%d.h5" % file_idx)) as store:
-#             seg_props = list(filter(lambda x: x.shape[0] != 0, seg_props))
-#             seg_props = pd.concat(seg_props)
-#             seg_props = seg_props.set_index(["file_trench_index", "time_s", "trench_cell_index"])
-#             seg_props = seg_props.sort_index()
-#             store.put('metrics', seg_props, format='table', data_columns=True)
-#             if metadata is not None:
-#                 store.get_storer('metrics').attrs.metadata = metadata
-#         return "Done"
-#     def extract_cell_data(self, file_idx, times, global_trench_indices, trench_loadings, props_to_grab, metadata, priority):
-#         with h5py.File(os.path.join(self.phasesegmentationpath, "segmentation_%d.hdf5" % file_idx), "r") as input_file:
-#             with HDFStore(os.path.join(self.phasedatapath, "data_%d.hdf5" % file_idx)) as store:
-#                 if "/metrics" in store.keys():
-#                     store.remove("/metrics")
-#                 segmented_mask_array = input_file["data"][:]
-#                 original_shape = segmented_mask_array.shape
-#                 segmented_mask_array = list(segmented_mask_array.reshape(-1, original_shape[2], original_shape[3]))
-#                 trench_indices = []
-#                 for i in range(original_shape[0]): 
-#                     trench_indices.extend([i]*original_shape[1])
-#                 with worker_client() as client:
-#                     futures = client.map(self.get_seg_prop_dataframe, segmented_mask_array, [props_to_grab]*len(segmented_mask_array), list(trench_loadings) , trench_indices, list(global_trench_indices), list(times), priority=priority*8)
-#                     del segmented_mask_array
-#                     seg_props = client.gather(futures)
-#                 seg_props = list(filter(lambda x: x.shape[0] != 0, seg_props))
-#                 seg_props = pd.concat(seg_props)
-#                 seg_props = seg_props.set_index(["file_trench_index", "time_s", "trench_cell_index"])
-#                 store.put('metrics', seg_props, format='table', data_columns=True)
-#                 if metadata is not None:
-#                     store.get_storer('metrics').attrs.metadata = metadata
-#         return "Done"
-    
-    def dask_extract_cell_data(self, dask_controller, props_to_grab):
+    def dask_extract_cell_data(self, dask_controller, props_to_grab, file_list=None, overwrite=True):
         dask_controller.futures = {}
-        writedir(self.phasedatapath,overwrite=True)
-
+        writedir(self.phasedatapath,overwrite=overwrite)
+        
         kymodf = self.meta_handle.read_df("kymograph",read_metadata=True)
         metadata = kymodf.metadata
-#         width = metadata['kymograph_params']['trench_width_x']
-#         height = metadata['kymograph_params']['ttl_len_y']
-        file_list = kymodf["File Index"].unique().tolist()
+
+        if file_list is None:
+            file_list = kymodf["File Index"].unique().tolist()
         num_file_jobs = len(file_list)
         kymodf = kymodf.reset_index()
         kymodf = kymodf.set_index(["File Index", "File Trench Index", "timepoints"])
-#         n_trenches = len(kymodf.index.unique("File Trench Index"))
-#         n_timepoints = len(kymodf.index.unique("timepoints"))
+
         random_priorities = np.random.uniform(size=(num_file_jobs,2))
         for k,file_idx in enumerate(file_list):
             segmented_masks_file = "segmentation_" + str(file_idx) + ".hdf5"
             if segmented_masks_file in os.listdir(self.phasesegmentationpath):
-#                 print("Submit future %d" % file_idx)
                 times = kymodf.loc[file_idx, "time (s)"]
                 global_trench_indices = kymodf.loc[file_idx, "trenchid"]
                 trench_loadings = kymodf.loc[file_idx, "Trench Loading"]
                 trench_future = dask_controller.daskclient.submit(self.load_trench_array_list, self.phasesegmentationpath + "/segmentation_", file_idx, "data", False, priority=random_priorities[k, 0])
-#                 trench_indices = []
-#                 for i in range(n_trenches): 
-#                     trench_indices.extend([i]*n_timepoints)
-#                 flattened_array_future = dask_controller.daskclient.submit(lambda x: list(x.reshape(-1, height, width)), trench_future)
-#                 dataframes_future = dask_controller.daskclient.submit(self.get_seg_prop_dataframe_map, flattened_array_future, [props_to_grab]*len(flattened_array_future), list(trench_loadings) , trench_indices, list(global_trench_indices), list(times), priority=priority*8)
-#                 dask_controller.futures["Cell Props %d: " % file_idx] = dask_controller.daskclient.submit(self.save_cell_props_to_file, file_idx, dataframes_future)
-#                 dask_controller.futures["Cell Props %d: " % file_idx] = dask_controller.daskclient.submit(self.extract_cell_data, file_idx, times, global_trench_indices, trench_loadings, props_to_grab, metadata, random_priorities[k, 0], priority=random_priorities[k, 0])
-    
                 dask_controller.futures["Cell Props %d: " % file_idx] = dask_controller.daskclient.submit(self.extract_cell_data, file_idx, trench_future, times, global_trench_indices, trench_loadings, props_to_grab, metadata, priority=random_priorities[k, 1]*8)
     
     def extract_cell_data(self, file_idx, segmented_mask_array, times, global_trench_indices, trench_loadings, props_to_grab, metadata=None):
         with HDFStore(os.path.join(self.phasedatapath, "data_%d.h5" % file_idx)) as store:
             if "/metrics" in store.keys():
                 store.remove("/metrics")
-            first_successful_dataframe = True
+            trench_time_dataframes = []
             for trench_idx in range(segmented_mask_array.shape[0]):
                 for time_idx in range(segmented_mask_array.shape[1]):
                     seg_props = sk.measure.regionprops(segmented_mask_array[trench_idx, time_idx,:,:],cache=False)
                     if len(seg_props) > 0:
                         seg_props = self.props_to_dict(seg_props, props_to_grab)
                         seg_props = pd.DataFrame(seg_props, columns=props_to_grab)
-                        seg_props["trench_cell_index"] = seg_props["label"]
-                        seg_props = seg_props.drop("label", axis=1)
-                        if "bbox" in props_to_grab:
-                            seg_props[['min_row', 'min_col', 'max_row', 'max_col']] = pd.DataFrame(seg_props['bbox'].tolist(), index=seg_props.index)
-                            seg_props = seg_props.drop("bbox", axis=1)
-                        if "centroid" in props_to_grab:
-                            seg_props[['centx', 'centy']] = pd.DataFrame(seg_props['centroid'].tolist(), index=seg_props.index)
-                            seg_props = seg_props.drop("centroid", axis=1)
-                        seg_props["trench_loadings"] = trench_loadings.loc[trench_idx,time_idx]
-                        seg_props["file_trench_index"] = trench_idx
-                        seg_props["trenchid"] = global_trench_indices.loc[trench_idx,time_idx]
-                        seg_props["time_s"] = times.loc[trench_idx, time_idx]
-                        seg_props = seg_props.set_index(["file_trench_index", "time_s", "trench_cell_index"])
-                        if first_successful_dataframe:
-                            store.put('metrics', seg_props, format='table', data_columns=True)
-                            if metadata is not None:
-                                store.get_storer('metrics').attrs.metadata = metadata
-                            first_successful_dataframe = False
-                        else:
-                            store.append('metrics', seg_props)
-                        del seg_props
+                        trench_time_dataframes.append(seg_props)
+                    del seg_props
             del segmented_mask_array
+            seg_props = pd.concatenate(trench_time_dataframes)
+            seg_props["trench_cell_index"] = seg_props["label"]
+            seg_props = seg_props.drop("label", axis=1)
+            if "bbox" in props_to_grab:
+                seg_props[['min_row', 'min_col', 'max_row', 'max_col']] = pd.DataFrame(seg_props['bbox'].tolist(), index=seg_props.index)
+                seg_props = seg_props.drop("bbox", axis=1)
+            if "centroid" in props_to_grab:
+                seg_props[['centx', 'centy']] = pd.DataFrame(seg_props['centroid'].tolist(), index=seg_props.index)
+                seg_props = seg_props.drop("centroid", axis=1)
+            seg_props["trench_loadings"] = trench_loadings.loc[trench_idx,time_idx]
+            seg_props["file_trench_index"] = trench_idx
+            seg_props["trenchid"] = global_trench_indices.loc[trench_idx,time_idx]
+            seg_props["time_s"] = times.loc[trench_idx, time_idx]
+            seg_props = seg_props.set_index(["file_trench_index", "time_s", "trench_cell_index"])
+            store.put("metrics", seg_props, data_columns=True)
+            if metadata is not None:
+                store.get_storer("metrics").attrs.metadata = metadata
         return "Done"
