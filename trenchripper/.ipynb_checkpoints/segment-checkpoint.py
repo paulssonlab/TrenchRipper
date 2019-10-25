@@ -170,26 +170,15 @@ class fluo_segmentation:
         conv_weight_arrs = np.array(conv_weight_arrs)
         conv_max_merged = np.max(conv_weight_arrs,axis=0)
         return conv_max_merged
-    
+        
     def segment(self,img_arr): #img_arr is t,y,x
 #         input_kymo = kymo_handle()
 #         input_kymo.import_wrap(img_arr,scale=self.scale_timepoints,scale_perc=self.scaling_percentage)
         t_tot = img_arr.shape[0]
-        working_img = self.preprocess_img(img_arr,sigma=self.smooth_sigma,bit_max=self.bit_max)
+        working_img = self.preprocess_img(img_arr,sigma=self.smooth_sigma,bit_max=self.bit_max) #8_bit 
         inverted = np.array([sk.util.invert(working_img[t]) for t in range(working_img.shape[0])])
-#         min_eigvals = np.array([self.hessian_contrast_enc(inverted[t],self.hess_pad) for t in range(inverted.shape[0])])
         min_eigvals = np.array([self.to_8bit(self.hessian_contrast_enc(inverted[t],self.hess_pad)) for t in range(inverted.shape[0])])
-        del inverted
-        
-#         min_eigvals = self.to_8bit(self.hessian_contrast_enc(inverted,self.hess_pad))
-        
-#         working_img = self.preprocess_img(input_kymo.return_unwrap(padding=self.wrap_pad),sigma=self.smooth_sigma)
-#         del input_kymo
-
-#         inverted = sk.util.invert(working_img)
-#         min_eigvals = self.to_8bit(self.hessian_contrast_enc(inverted,self.hess_pad))
-#         del inverted
-                
+        del inverted        
         cell_mask = self.cell_region_mask(working_img,method=self.cell_mask_method,global_threshold=self.global_threshold,cell_otsu_scaling=self.cell_otsu_scaling,local_otsu_r=self.local_otsu_r)
                 
         mid_threshold_arr = self.get_mid_threshold_arr(min_eigvals,edge_threshold_scaling=self.edge_threshold_scaling,padding=self.wrap_pad)
@@ -218,6 +207,7 @@ class fluo_segmentation:
         output_kymo.import_unwrap(final_mask,t_tot,padding=self.wrap_pad)
         segmented = output_kymo.return_wrap()
         return segmented
+    
 
 class fluo_segmentation_cluster(fluo_segmentation):
     def __init__(self,headpath,paramfile=True,seg_channel="",scale_timepoints=False,scaling_percentage=0.9,smooth_sigma=0.75,bit_max=0,wrap_pad=0,\
@@ -279,6 +269,90 @@ class fluo_segmentation_cluster(fluo_segmentation):
         file_list = kymodf["File Index"].unique().tolist()
         num_file_jobs = len(file_list)
                 
+        random_priorities = np.random.uniform(size=(num_file_jobs,))
+        for k,file_idx in enumerate(file_list):
+            priority = random_priorities[k]
+            
+            future = dask_controller.daskclient.submit(self.generate_segmentation,file_idx,retries=1,priority=priority)
+            dask_controller.futures["Segmentation: " + str(file_idx)] = future
+
+class fluo_segmentation_cluster(fluo_segmentation):
+    def __init__(self,headpath,paramfile=True,seg_channel="",scale_timepoints=False,scaling_percentage=0.9,smooth_sigma=0.75,wrap_pad=0,\
+                 hess_pad=4,min_obj_size=30,cell_mask_method='local',global_otsu_scaling=1.,cell_otsu_scaling=1.,local_otsu_r=15,\
+                 edge_threshold_scaling=1.,threshold_step_perc=.1,threshold_perc_num_steps=2,convex_threshold=0.8):
+        
+        if paramfile:
+            parampath = headpath + "/fluorescent_segmentation.par"
+            with open(parampath, 'rb') as infile:
+                param_dict = pickle.load(infile)
+            
+            scale_timepoints = param_dict["Scale Fluorescence?"]
+            scaling_percentage = param_dict["Scaling Percentile:"]
+            seg_channel = param_dict["Segmentation Channel:"]
+            smooth_sigma = param_dict["Gaussian Kernel Sigma:"]
+            min_obj_size = param_dict["Minimum Object Size:"]
+            cell_mask_method = param_dict["Cell Mask Thresholding Method:"]
+            global_otsu_scaling = param_dict["Global Threshold Scaling:"]
+            cell_otsu_scaling = param_dict["Cell Threshold Scaling:"]
+            local_otsu_r = param_dict["Local Otsu Radius:"]
+            edge_threshold_scaling = param_dict["Edge Threshold Scaling:"]
+            threshold_step_perc = param_dict["Threshold Step Percent:"]
+            threshold_perc_num_steps = param_dict["Number of Threshold Steps:"]
+            convex_threshold = param_dict["Convexity Threshold:"]
+        
+        super(fluo_segmentation_cluster, self).__init__(scale_timepoints=scale_timepoints,scaling_percentage=scaling_percentage,smooth_sigma=smooth_sigma,\
+                                                        wrap_pad=wrap_pad,hess_pad=hess_pad,min_obj_size=min_obj_size,cell_mask_method=cell_mask_method,\
+                                                        global_otsu_scaling=global_otsu_scaling,cell_otsu_scaling=cell_otsu_scaling,local_otsu_r=local_otsu_r,\
+                                                        edge_threshold_scaling=edge_threshold_scaling,threshold_step_perc=threshold_step_perc,\
+                                                        threshold_perc_num_steps=threshold_perc_num_steps,convex_threshold=convex_threshold)
+
+        self.headpath = headpath
+        self.seg_channel = seg_channel
+        self.kymographpath = headpath + "/kymograph"
+        self.fluorsegmentationpath = headpath + "/fluorsegmentation"
+        self.metapath = headpath + "/metadata.hdf5"
+        self.meta_handle = pandas_hdf5_handler(self.metapath)
+
+    def writedir(self,directory,overwrite=False):
+        """Creates an empty directory at the specified location. If a directory is
+        already at this location, it will be overwritten if 'overwrite' is true,
+        otherwise it will be left alone.
+        
+        Args:
+            directory (str): Path to directory to be overwritten/created.
+            overwrite (bool, optional): Whether to overwrite a directory that
+            already exists in this location.
+        """
+        if overwrite:
+            if os.path.exists(directory):
+                shutil.rmtree(directory)
+            os.makedirs(directory)
+        else:
+            if not os.path.exists(directory):
+                os.makedirs(directory)
+
+    def generate_segmentation(self,file_idx):
+        with h5py.File(self.fluorsegmentationpath + "/segmentation_" + str(file_idx) + ".hdf5", "w") as h5pyfile:
+            with h5py.File(self.kymographpath + "/kymograph_" + str(file_idx) + ".hdf5","r") as input_file:
+                input_data = input_file[self.seg_channel]
+                trench_output = []
+                for trench_idx in range(input_data.shape[0]):
+                    trench_array = input_data[trench_idx]
+                    trench_array = self.segment(trench_array)
+                    trench_output.append(trench_array[np.newaxis])
+                    del trench_array
+            trench_output = np.concatenate(trench_output,axis=0)
+            hdf5_dataset = h5pyfile.create_dataset("data", data=trench_output, dtype=bool)
+            return "Done"
+
+    def dask_segment(self,dask_controller):
+        self.writedir(self.fluorsegmentationpath,overwrite=True)
+        dask_controller.futures = {}
+        
+        kymodf = self.meta_handle.read_df("kymograph",read_metadata=True)
+        file_list = kymodf["File Index"].unique().tolist()
+        num_file_jobs = len(file_list)
+        
         random_priorities = np.random.uniform(size=(num_file_jobs,))
         for k,file_idx in enumerate(file_list):
             priority = random_priorities[k]

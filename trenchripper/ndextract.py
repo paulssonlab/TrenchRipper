@@ -13,12 +13,13 @@ from tifffile import imsave
 from .utils import pandas_hdf5_handler,writedir
 
 class hdf5_fov_extractor:
-    def __init__(self,nd2filename,headpath,tpts_per_file=100): #note this chunk size has a large role in downstream steps...make sure is less than 1 MB
+    def __init__(self,nd2filename,headpath,tpts_per_file=100,ignore_fovmetadata=False): #note this chunk size has a large role in downstream steps...make sure is less than 1 MB
         self.nd2filename = nd2filename
         self.headpath = headpath
         self.metapath = self.headpath + "/metadata.hdf5"
         self.hdf5path = self.headpath + "/hdf5"
         self.tpts_per_file = tpts_per_file
+        self.ignore_fovmetadata = ignore_fovmetadata
                 
     def assignidx(self,metadf):
         outdf = copy.deepcopy(metadf)
