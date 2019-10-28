@@ -7,29 +7,101 @@ import pickle
 import shutil
 import cv2
 import pandas as pd
+from memory_profiler import profile
+
 
 import scipy.signal as signal
 from .utils import kymo_handle,pandas_hdf5_handler,writedir
 from .cluster import hdf5lock
+from .DetectPeaks import detect_peaks
 from time import sleep
 from dask.distributed import worker_client
 from pandas import HDFStore
 
 class mother_tracker():
+    def __init__(self, headpath):
+        self.headpath = headpath
+        self.phasesegmentationpath = headpath + "/phasesegmentation"
+        self.phasedatapath = self.phasesegmentationpath + "/cell_data"
+        self.growthdatapath = headpath +"/growth_data.hdf5"
+        
+        self.metapath = headpath + "/metadata.hdf5"
+        self.meta_handle = pandas_hdf5_handler(self.metapath)
     
+#     @profile
+    def get_growth_props(self, file_idx, lower_threshold=0.35, upper_threshold=0.75):
+        file_df = pd.read_hdf(os.path.join(self.phasedatapath, "data_%d.h5" % file_idx))
+        file_df = file_df.reset_index()
+        file_df = file_df.set_index(["file_trench_index", "trench_cell_index"])
+        file_df = file_df.sort_index(level=0)
+        trenches = file_df.index.unique("file_trench_index")
+        file_dt = []
+        file_dt_smoothed = []
+        file_growth_rate = []
+        for trench in trenches:
+            try:
+                mother_df = file_df.loc[trench,1]
+                fov = mother_df["fov"].unique()[0]
+                trenchid = mother_df["trenchid"].unique()[0]
+            except TypeError:
+                continue
+            dt_data, dt_smoothed_data, growth_rate_data = self.get_mother_cell_growth_props(mother_df, lower_threshold=lower_threshold, upper_threshold=upper_threshold)
+            if dt_data is not None:
+                dt_data = np.concatenate([dt_data, np.array([trench]*dt_data.shape[0])[:, None], np.array([trenchid]*dt_data.shape[0])[:, None], np.array([fov]*dt_data.shape[0])[:, None]], axis=1)
+                dt_smoothed_data = np.concatenate([dt_smoothed_data, np.array([trench]*dt_smoothed_data.shape[0])[:, None], np.array([trenchid]*dt_smoothed_data.shape[0])[:, None], np.array([fov]*dt_smoothed_data.shape[0])[:, None]], axis=1)
+                growth_rate_data = np.concatenate([growth_rate_data, np.array([trench]*growth_rate_data.shape[0])[:, None], np.array([trenchid]*growth_rate_data.shape[0])[:, None], np.array([fov]*growth_rate_data.shape[0])[:, None]], axis=1)
+                file_dt.append(dt_data)
+                file_dt_smoothed.append(dt_smoothed_data)
+                file_growth_rate.append(growth_rate_data)
+        file_dt = np.concatenate(file_dt, axis=0)
+        file_dt_smoothed = np.concatenate(file_dt_smoothed, axis=0)
+        file_growth_rate = np.concatenate(file_growth_rate, axis=0)
+        
+        file_dt = np.append(file_dt, np.array([file_idx]*file_dt.shape[0])[:, None], axis=1)
+        file_dt_smoothed = np.append(file_dt_smoothed, np.array([file_idx]*file_dt_smoothed.shape[0])[:, None], axis=1)
+        file_growth_rate = np.append(file_growth_rate, np.array([file_idx]*file_growth_rate.shape[0])[:, None], axis=1)
+        return file_dt, file_dt_smoothed, file_growth_rate
+    
+#     @profile
+    def save_all_growth_props(self, file_list=None, lower_threshold=0.35, upper_threshold=0.75):
+        if file_list is None:
+            kymodf = self.meta_handle.read_df("kymograph",read_metadata=True)
+            file_list = kymodf["File Index"].unique().tolist()
+        all_dt = []
+        all_dt_smoothed = []
+        all_growth_rate = []
+        for file_idx in file_list:
+            file_dt, file_dt_smoothed, file_growth_rate = self.get_growth_props(file_idx, lower_threshold=lower_threshold, upper_threshold=upper_threshold)
+            all_dt.append(file_dt)
+            all_dt_smoothed.append(file_dt_smoothed)
+            all_growth_rate.append(file_growth_rate)
+        all_dt = np.concatenate(all_dt)
+        all_dt_smoothed = np.concatenate(all_dt_smoothed)
+        all_growth_rate = np.concatenate(all_growth_rate)
+        all_dt = pd.DataFrame(all_dt, columns=["time", "doubling_time_s", "file_trench_idx", "trenchid", "fov", "file_idx"])
+        all_dt_smoothed = pd.DataFrame(all_dt_smoothed, columns=["time", "doubling_time_s", "file_trench_idx", "trenchid", "fov", "file_idx"])
+        all_growth_rate = pd.DataFrame(all_growth_rate, columns=["time", "igr_length", "igr_length_smoothed", "igr_area", "igr_area_smoothed", "igr_length_normed", "igr_length_smoothed_normed", "igr_area_normed", "igr_area_smoothed_normed", "file_trench_idx", "trenchid", "fov", "file_idx"])
+        all_dt = all_dt.set_index(["fov", "trenchid"])
+        all_dt_smoothed = all_dt_smoothed.set_index(["fov", "trenchid"])
+        all_growth_rate = all_growth_rate.set_index(["fov", "trenchid"])
+        with HDFStore(os.path.join(self.phasesegmentationpath, "growth_properties.h5")) as store:            
+            store.put("doubling_times", all_dt, data_columns=True)
+            store.put("doubling_times_smoothed", all_dt_smoothed, data_columns=True)
+            store.put("growth_rates", all_growth_rate, data_columns=True)
+        
     def get_doubling_times(self, times, peak_series):
         peaks = detect_peaks(peak_series, mpd=5)
         time_of_doubling = times[peaks]
-        doubling_time_s = times[1:]-times[0:len(times)-1]
-        return np.array([times[0:len(times)-1], doubling_time_s]).T
+        doubling_time_s = time_of_doubling[1:]-time_of_doubling[0:len(time_of_doubling)-1]
+        return np.array([time_of_doubling[1:], doubling_time_s]).T
         
-    def get_mother_cell_growth_props(self, mother_data_frame):
-        loading_fractions = np.array(mother_data_frame["loading_fractions"])
+    def get_mother_cell_growth_props(self, mother_data_frame, lower_threshold=0.35, upper_threshold=0.75):
+        loading_fractions = np.array(mother_data_frame["trench_loadings"])
         cutoff_index = len(loading_fractions)
         if cutoff_index < 5:
             return None, None, None
         for i in range(len(loading_fractions)-5):
-            if np.all(~((loading_fractions[i:i+5] > 0.35)*(loading_fractions[i:i+5] < 0.6))):
+            if np.all(~((loading_fractions[i:i+5] > lower_threshold)*(loading_fractions[i:i+5] < upper_threshold))):
                 cutoff_index = i
         if cutoff_index < 5:
             return None, None, None
@@ -45,76 +117,10 @@ class mother_tracker():
         instantaneous_growth_rate_length = np.gradient(major_axis_length, times)[1:]
         instantaneous_growth_rate_area = np.gradient(area, times)[1:]
         instantaneous_growth_rate_length_smoothed = np.gradient(mal_smoothed, times)[1:]
-        instantaneous_growth_rate_area_smoothed = np.gradient(major_axis_length, times)[1:]
+        instantaneous_growth_rate_area_smoothed = np.gradient(area_smoothed, times)[1:]
         
         growth_rate_data = np.array([times[1:], instantaneous_growth_rate_length, instantaneous_growth_rate_length_smoothed, instantaneous_growth_rate_area, instantaneous_growth_rate_area_smoothed]).T
         
-        doubling_time_dataframe = pd.DataFrame(doubling_time, index=None, columns=["time_s", "doubling_time_s"])
-        doubling_time_smoothed_dataframe = pd.DataFrame(doubling_time_smoothed, index=None, columns=["time_s", "doubling_time_s"])
-        growth_rate_dataframe = pd.DataFrame(growth_rate_data, index=None, columns=["time_s", "igr_length", "igr_length_smoothed", "igr_area", "igr_area_smoothed"])
+        growth_rate_data = np.concatenate([growth_rate_data, growth_rate_data[:,1:3]/major_axis_length[1:, None], growth_rate_data[:,3:5]/area[1:, None]], axis=1)
                                                
-        return doubling_time_dataframe, doubling_time_smoothed_dataframe, growth_rate_dataframe
-        
-
-class mother_tracker_cluster(mother_tracker):
-    def __init__(self, headpath):
-        super(mother_tracker_cluster).__init__()
-        self.headpath = headpath
-        self.phasesegmentationpath = headpath + "/phasesegmentation"
-        self.phasedatapath = self.phasesegmentationpath + "/cell_data"
-        self.growthdatapath = headpath +"/growth_data.hdf5"
-        
-        self.metapath = headpath + "/metadata.hdf5"
-        self.meta_handle = pandas_hdf5_handler(self.metapath)
-    
-    def get_growth_props(self, file_idx):
-        file_df = pd.read_hdf(os.path.join(self.phasedatapath, "data_%d.h5" % file_idx))
-        trenches = file_df.index.unique("file_trench_idx")
-        dt_dfs = []
-        dt_smoothed_dfs = []
-        growth_rate_dfs = []
-        for trench in trenches:
-            mother_df = file_df.loc[trench,:,1]
-            dt_df, dt_smoothed_df, growth_rate_df = self.get_mother_cell_growth_props(mother_df)
-            if dt_df is not None:
-                dt_df["file_trench_idx"] = trench
-                dt_smoothed_df["file_trench_idx"] = trench
-                dt_smoothed_df["file_trench_idx"] = trench
-                dt_dfs.append(dt_df)
-                dt_smoothed_dfs.append(dt_smoothed_df)
-                growth_rate_df.append(growth_rate_df)
-        dt_dfs = pd.concatenate(dt_dfs)
-        dt_smoothed_dfs = pd.concatenate(dt_smoothed_dfs)
-        growth_rate_dfs = pd.concatenate(growth_rate_dfs)
-        dt_dfs["file_idx"] = file_idx
-        dt_smoothed_dfs["file_idx"] = file_idx
-        growth_rate_dfs["file_idx"] = file_idx
-        dt_dfs.set_index(["file_idx", "file_trench_idx"])
-        dt_smoothed_dfs.set_index(["file_idx", "file_trench_idx"])
-        growth_rate_dfs.set_index(["file_idx", "file_trench_idx"])
-        return dt_dfs, dt_smoothed_dfs, growth_rate_dfs
-        
-    def growth_props_cluster(self, daskcontroller):
-        dask_controller.futures = []
-        writedir(self.phasedatapath,overwrite=True)
-        kymodf = self.meta_handle.read_df("kymograph",read_metadata=True)
-        file_list = kymodf["File Index"].unique().tolist()
-        num_file_jobs = len(file_list)
-                                               
-        random_priorities = np.random.uniform(size=(num_file_jobs,))
-        for file_idx in file_list:
-            dask_controller.futures.append(dask_controller.daskclient.submit(self.get_growth_props, file_idx))
-    
-    def postprocess_growth_props(self, dask_controller):
-        store = HDFStore(self.growthdatapath)
-        for idx, future in enumerate(dask_controller.futures):
-            dt_df, dt_smoothed_df, gr_df = future.result()
-            if idx == 0:
-                store.put("doubling_time", dt_df, format='table', data_columns=True)
-                store.put("doubling_time_smoothed", dt_smoothed_df, format='table', data_columns=True)
-                store.put("growth_rate", gr_df, format='table', data_columns=True)
-            else:
-                store.append("doubling_time", dt_df)
-                store.append("doubling_time_smoothed", dt_smoothed_df)
-                store.append("growth_rate", gr_df)
-        store.close()
+        return doubling_time, doubling_time_smoothed, growth_rate_data
