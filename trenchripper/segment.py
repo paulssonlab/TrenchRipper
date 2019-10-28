@@ -7,7 +7,6 @@ import pickle
 import shutil
 import cv2
 import pandas as pd
-from sets import Set
 
 from skimage import measure,feature,segmentation,future,util,morphology,filters
 from .utils import kymo_handle,pandas_hdf5_handler,writedir
@@ -219,15 +218,6 @@ class phase_segmentation:
             return conn_comp, trench_masks, img_mask, maxima
         else:
             return conn_comp, loaded_fraction
-
-    def find_watershed_mask_future(self, trench_mask_and_median_future):
-        return self.findWatershedMask(trench_mask_and_median_future[1], trench_mask_and_median_future[0]), trench_mask_and_median_future[1]
-    
-    def find_watershed_maxima_future(self, watershed_mask_and_median_future):
-        return self.findWatershedMaxima(watershed_mask_and_median_future[1], watershed_mask_and_median_future[0]), watershed_mask_and_median_future[1]
-    
-    def find_connected_component_future(self, watershed_maxima_and_mask_future):
-        return self.extract_connected_components_phase(watershed_maxima_and_mask_future[1], watershed_maxima_and_mask_future[0])
     
     def find_trench_masks_and_median_filtered_list(self, trench_array_list):
         trench_masks_list = np.empty_like(trench_array_list, dtype=bool)
@@ -597,17 +587,6 @@ class phase_segmentation_cluster(phase_segmentation):
         self.meta_handle = pandas_hdf5_handler(self.metapath)
         self.bit_max = None
         self.persisted_futures = None
-
-    def generate_segmentation(self,future_8bit):
-        with worker_client() as client:
-            original_shape = future_8bit.shape
-            future_trench_mask_and_median = client.map(self.get_trench_mask_and_median_filter, list(future_8bit.reshape(-1,original_shape[2], original_shape[3])), retries=1, priority=4*priorities[1])
-            future_watershed_mask_and_median = client.map(self.find_watershed_mask_future, future_trench_mask_and_median, retries=1, priority=8**priorities[2])
-            future_watershed_maxima_and_mask = client.map(self.find_watershed_maxima_future, future_watershed_mask_and_median, retries=1, priority=16*priorities[3])
-            future_final_mask = client.map(self.find_connected_component_future, future_watershed_maxima_and_mask, retries=1, priority=32*priorities[4])
-            final_masks = np.array(client.gather(future_final_mask)).reshape(original_shape)
-            hdf5_dataset = h5pyfile.create_dataset("data", data=final_masks, dtype=bool)
-            return "Done"
         
     def load_trench_array_list(self, path_form, file_idx, key, to_8bit):
         with h5py.File(path_form + str(file_idx) + ".hdf5","r") as input_file:
@@ -622,7 +601,6 @@ class phase_segmentation_cluster(phase_segmentation):
     
     def save_masks_to_hdf(self, file_idx, final_masks_future, data_shape=None):
         with h5py.File(self.phasesegmentationpath + "/segmentation_" + str(file_idx) + ".hdf5", "w") as h5pyfile:
-#             hdf5_dataset = h5pyfile.create_dataset("data", data=np.array(final_masks_future).reshape(data_shape), dtype=bool)
             hdf5_dataset = h5pyfile.create_dataset("data", data=final_masks_future, dtype=np.uint8)
         return "Done"
             
@@ -646,13 +624,7 @@ class phase_segmentation_cluster(phase_segmentation):
             file_list = kymodf["File Index"].unique().tolist()
         
         num_file_jobs = len(file_list)
-
-#         random_priorities = np.random.uniform(size=(num_file_jobs,))
-#         for k,file_idx in enumerate(file_list):
-#             future = dask_controller.daskclient.submit(self.load_trench_array_list, file_idx, retries=1, priority=random_priorities[k]*0.1)
-#             future = dask_controller.daskclient.submit(self.generate_segmentation, future, retries=1, priority=random_priorities[k])
-#             dask_controller.futures["Segmentation: " + str(file_idx)] = future
-
+        
         random_priorities = np.random.uniform(size=(num_file_jobs,6))
         for k,file_idx in enumerate(file_list):
             future = dask_controller.daskclient.submit(self.load_trench_array_list, self.kymographpath + "/kymograph_", file_idx, self.seg_channel, True, retries=1,priority=random_priorities[k,0]*0.1)
@@ -662,10 +634,6 @@ class phase_segmentation_cluster(phase_segmentation):
             future = dask_controller.daskclient.submit(self.find_conn_comp_list,future,retries=1,priority=random_priorities[k,4]*25.6)
             future = dask_controller.daskclient.submit(self.save_masks_to_hdf,file_idx,future,retries=1,priority=random_priorities[k,5]*51.2)
             dask_controller.futures["Segmentation: " + str(file_idx)] = future
-        
-    
-            
-        
     
     def dask_characterize_trench_loading(self, dask_controller, file_list=None):
         dask_controller.futures = {}
@@ -691,41 +659,18 @@ class phase_segmentation_cluster(phase_segmentation):
     def props_to_dict(self, regionprops, props_to_grab):
         props_dict = {}
         for prop in props_to_grab:
-            props_dict[prop] = []
-        for region in regionprops:
-            for prop in props_to_grab:
-                props_dict[prop].append(region[prop])
+            props_dict[prop] = list(map(lambda x: x[prop], regionprops))
         del regionprops
         return props_dict
     
     def persist_futures(self, sleep_time=900):
         if self.persisted_futures is None:
-            self.persisted_futures = Set([])
+            self.persisted_futures = set()
         for file_idx, (key, item) in enumerate(self.daskcontroller.futures.items()):
             if item.status == "finished":
                 self.persisted_futures |= file_idx
+        print("%d futures finished" % len(self.persisted_futures))
         sleep(sleep_time)
-    
-    def get_seg_prop_dataframe(self, image, props_to_grab, trench_loading, trench_idx, global_trench_index, time_s):
-        seg_props = sk.measure.regionprops(image,cache=False)
-        if len(seg_props) > 0:
-            seg_props = self.props_to_dict(seg_props, props_to_grab)
-            seg_props = pd.DataFrame(seg_props, columns=props_to_grab)
-            seg_props["trench_cell_index"] = seg_props["label"]
-            seg_props = seg_props.drop("label", axis=1)
-            if "bbox" in props_to_grab:
-                seg_props[['min_row', 'min_col', 'max_row', 'max_col']] = pd.DataFrame(seg_props['bbox'].tolist(), index=seg_props.index)
-                seg_props = seg_props.drop("bbox", axis=1)
-            if "centroid" in props_to_grab:
-                seg_props[['centy','centx']] = pd.DataFrame(seg_props['centroid'].tolist(), index=seg_props.index)
-                seg_props = seg_props.drop("centroid", axis=1)
-            seg_props["trench_loadings"] = trench_loading
-            seg_props["file_trench_index"] = trench_idx
-            seg_props["trenchid"] = global_trench_index
-            seg_props["time_s"] = time_s
-            return seg_props
-        else:
-            return pd.DataFrame()
     
     def dask_extract_cell_data(self, dask_controller, props_to_grab, file_list=None, overwrite=True):
         dask_controller.futures = {}
@@ -733,6 +678,9 @@ class phase_segmentation_cluster(phase_segmentation):
         
         kymodf = self.meta_handle.read_df("kymograph",read_metadata=True)
         metadata = kymodf.metadata
+        
+        globaldf = self.meta_handle.read_df("global", read_metadata=True)
+        pixel_scaling = globaldf.metadata["pixel_microns"]
 
         if file_list is None:
             file_list = kymodf["File Index"].unique().tolist()
@@ -747,39 +695,53 @@ class phase_segmentation_cluster(phase_segmentation):
                 times = kymodf.loc[file_idx, "time (s)"]
                 global_trench_indices = kymodf.loc[file_idx, "trenchid"]
                 trench_loadings = kymodf.loc[file_idx, "Trench Loading"]
-                # trench_future = dask_controller.daskclient.submit(self.load_trench_array_list, self.phasesegmentationpath + "/segmentation_", file_idx, "data", False, priority=random_priorities[k, 0])
-                dask_controller.futures["Cell Props %d: " % file_idx] = dask_controller.daskclient.submit(self.extract_cell_data, file_idx, times, global_trench_indices, trench_loadings, props_to_grab, metadata, priority=random_priorities[k, 1]*8)
+                fov_idx = kymodf.loc[file_idx, "fov"]
+                dask_controller.futures["Cell Props %d: " % file_idx] = dask_controller.daskclient.submit(self.extract_cell_data, file_idx, fov_idx, times, global_trench_indices, trench_loadings, props_to_grab, pixel_scaling, metadata, priority=random_priorities[k, 1]*8)
     
-    def extract_cell_data(self, file_idx, times, global_trench_indices, trench_loadings, props_to_grab, metadata=None):
-        segmented_mask_array = self.load_trench_array_list(self.phasesegmentationpath + "/segmentation_", file_idx, "data", False,)
+    def extract_cell_data(self, file_idx, fov_idx, times, global_trench_indices, trench_loadings, props_to_grab, pixel_scaling, metadata=None):
+        segmented_mask_array = self.load_trench_array_list(self.phasesegmentationpath + "/segmentation_", file_idx, "data", False)
         with HDFStore(os.path.join(self.phasedatapath, "data_%d.h5" % file_idx)) as store:
             if "/metrics" in store.keys():
                 store.remove("/metrics")
-            trench_time_dataframes = []
+            trench_time_dataframes = {}
+            first_dict_flag = True
             for trench_idx in range(segmented_mask_array.shape[0]):
                 for time_idx in range(segmented_mask_array.shape[1]):
                     seg_props = sk.measure.regionprops(segmented_mask_array[trench_idx, time_idx,:,:],cache=False)
                     if len(seg_props) > 0:
                         seg_props = self.props_to_dict(seg_props, props_to_grab)
-                        seg_props = pd.DataFrame(seg_props, columns=props_to_grab)
-                        trench_time_dataframes.append(seg_props)
+                        seg_props["trenchid"] = [global_trench_indices.loc[trench_idx,time_idx]]*len(seg_props["label"])
+                        seg_props["file_trench_index"] = [trench_idx]*len(seg_props["label"])
+                        seg_props["time_s"] = [times.loc[trench_idx, time_idx]]*len(seg_props["label"])
+                        seg_props["trench_loadings"] = [trench_loadings.loc[trench_idx,time_idx]]*len(seg_props["label"])
+                        seg_props["fov"] = [fov_idx.loc[trench_idx,time_idx]]*len(seg_props["label"])
+                        if first_dict_flag:
+                            trench_time_dataframes = seg_props
+                            first_dict_flag = False
+                        else:
+                            for prop in trench_time_dataframes.keys():
+                                trench_time_dataframes[prop].extend(seg_props[prop])
                     del seg_props
             del segmented_mask_array
-            seg_props = pd.concatenate(trench_time_dataframes)
+            seg_props = pd.DataFrame(trench_time_dataframes)
             seg_props["trench_cell_index"] = seg_props["label"]
             seg_props = seg_props.drop("label", axis=1)
             if "bbox" in props_to_grab:
                 seg_props[['min_row', 'min_col', 'max_row', 'max_col']] = pd.DataFrame(seg_props['bbox'].tolist(), index=seg_props.index)
                 seg_props = seg_props.drop("bbox", axis=1)
             if "centroid" in props_to_grab:
-                seg_props[['centx', 'centy']] = pd.DataFrame(seg_props['centroid'].tolist(), index=seg_props.index)
+                seg_props[['centy', 'centx']] = pd.DataFrame(seg_props['centroid'].tolist(), index=seg_props.index)
                 seg_props = seg_props.drop("centroid", axis=1)
-            seg_props["trench_loadings"] = trench_loadings.loc[trench_idx,time_idx]
-            seg_props["file_trench_index"] = trench_idx
-            seg_props["trenchid"] = global_trench_indices.loc[trench_idx,time_idx]
-            seg_props["time_s"] = times.loc[trench_idx, time_idx]
+            length_scale_measurements = set(["major_axis_length", "equivalent_diameter", "minor_axis_length", "perimeter"])
+            for prop in props_to_grab:
+                if prop in length_scale_measurements:
+                    seg_props[prop] = seg_props[prop]*pixel_scaling
+            if "area" in props_to_grab:
+                seg_props["area"] = seg_props["area"]*(pixel_scaling)**2
             seg_props = seg_props.set_index(["file_trench_index", "time_s", "trench_cell_index"])
             store.put("metrics", seg_props, data_columns=True)
             if metadata is not None:
                 store.get_storer("metrics").attrs.metadata = metadata
+            del seg_props
+            del trench_time_dataframes
         return "Done"
