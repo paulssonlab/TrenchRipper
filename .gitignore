@@ -2,3 +2,4 @@
 *.dirlock
 *.pyc
 **/.ipynb_checkpoints
+*.log
