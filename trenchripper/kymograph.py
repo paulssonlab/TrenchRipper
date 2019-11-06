@@ -8,6 +8,7 @@ import os
 import pickle
 import sys
 import h5py_cache
+import copy
 from parse import compile
 
 from skimage import filters
@@ -1858,7 +1859,7 @@ class kymograph_multifov(multifov):
         return cropped_in_x_list
 
 class tiff_sequence_kymograph():
-    def __init__(self, headpath, tiffpath, all_channels, trenches_per_file):
+    def __init__(self, headpath, tiffpath, all_channels, trenches_per_file=100):
         self.headpath = headpath
         self.kymographpath = self.headpath + "/kymograph"
         self.hdf5path = self.headpath + "/hdf5"
@@ -1871,9 +1872,8 @@ class tiff_sequence_kymograph():
     def assignidx(self, metadf):
         outdf = copy.deepcopy(metadf)
         numchannels = len(pd.unique(metadf["channel"]))
-        numtrenches = 
-        num_total_files = (metadf.shape[0]//self.trenches_per_file) + 1
-        remainder = metadf.shape[0]%self.trenches_per_file
+        num_total_files = (outdf.shape[0]//(self.trenches_per_file*numchannels)) + 1
+        remainder = (outdf.shape[0]//numchannels)%(self.trenches_per_file)
 
         trench_file_idx = np.repeat(list(range(num_total_files)), self.trenches_per_file*numchannels)[:-(self.trenches_per_file-remainder)*numchannels]
 
@@ -1888,13 +1888,14 @@ class tiff_sequence_kymograph():
         kymograph_metadata = {}
         exp_metadata = {}
         first_img = imread(tiff_files[0])
-        exp_metadata["timepoints"] = first_img.shape[0]
+        exp_metadata["num_frames"] = first_img.shape[0]
         exp_metadata["height"] = first_img.shape[1]
         exp_metadata["width"] = first_img.shape[2]
 
         self.output_chunk_shape = (1,1,first_img.shape[1],first_img.shape[2])
         self.output_chunk_bytes = (2*np.multiply.accumulate(np.array(self.output_chunk_shape))[-1])
-
+        self.chunk_cache_mem_size = 2*self.output_chunk_bytes
+        
         kymograph_metadata = dict([(key, [value]) for key, value in parser.search(tiff_files[0]).named.items()])
         kymograph_metadata["Image Path"] = [tiff_files[0]]
         kymograph_metadata["Image Path"] = [tiff_files[0]]
@@ -1903,17 +1904,17 @@ class tiff_sequence_kymograph():
             for key, value in fov_frame_dict.items():
                 kymograph_metadata[key].append(value)
             kymograph_metadata["Image Path"].append(f)
-        if "lane" not in fov_metadata:
+        if "lane" not in kymograph_metadata:
             kymograph_metadata["lane"] = [1]*len(tiff_files)
-        if "row" not in fov_metadata:
+        if "row" not in kymograph_metadata:
             kymograph_metadata["row"] = [0]*len(tiff_files)
         
         kymograph_metadata = pd.DataFrame(kymograph_metadata)
 
         old_labels_fov = [list(frozen_array) for frozen_array in kymograph_metadata.set_index(["lane", "fov"]).index.unique().labels]
         old_labels_trench = [list(frozen_array) for frozen_array in kymograph_metadata.set_index(["lane", "fov", "trench"]).index.unique().labels]
-        old_labels_fov = list(zip(old_labels[0], old_labels[1]))
-        old_labels_trench = list(zip(old_labels[0], old_labels[1], old_labels[2]))
+        old_labels_fov = list(zip(old_labels_fov[0], old_labels_fov[1]))
+        old_labels_trench = list(zip(old_labels_trench[0], old_labels_trench[1], old_labels_trench[2]))
         
         fov_label_mapping = {}
         trench_label_mapping = {}
@@ -1947,47 +1948,53 @@ class tiff_sequence_kymograph():
         self.meta_handle = pandas_hdf5_handler(self.metapath)
         
         assignment_metadata = self.assignidx(kymograph_metadata.set_index(["trenchid"]))
-        channel_paths_by_file_index = assignment_metadata.reset_index()[["File Index", "channel", "Image Path"]].set_index("File Index")
-        channel_paths_by_file_index = [(file_index, list(channel_paths_by_file_index.loc[file_index]["channel"]), list(channel_paths_by_file_index.loc[file_index]["Image Path"])) for file_index in channel_paths_by_file_index.index.unique("File Index")]
+        
+        channel_tidx_paths_by_file_index = assignment_metadata.reset_index()[["File Index", "row", "channel", "File Trench Index", "Image Path"]].set_index(["File Index", "row"])
+        indices = [list(frozenlist) for frozenlist in channel_tidx_paths_by_file_index.index.unique().labels]
+        indices = list(zip(indices[0], indices[1]))
+        channel_tidx_paths_by_file_index = [(file_index, row, list(channel_tidx_paths_by_file_index.loc[file_index, row]["channel"]), list(channel_tidx_paths_by_file_index.loc[file_index, row]["File Trench Index"]), list(channel_tidx_paths_by_file_index.loc[file_index, row]["Image Path"])) for file_index, row, in indices]
+
         assignment_metadata = assignment_metadata.drop_duplicates(subset=["File Index", "File Trench Index"])
         assignment_metadata = assignment_metadata[["fov", "row", "trench", "File Index", "File Trench Index"]]
 
-        timepoints = np.repeat(np.array(list(range(exp_metadata["timepoints"])))[np.newaxis,:], assignment_metadata.shape[0], axis=0).flatten()
+        timepoints = np.repeat(np.array(list(range(exp_metadata["num_frames"])))[np.newaxis,:], assignment_metadata.shape[0], axis=0).flatten()
 
         assignment_metadata = assignment_metadata.reset_index()
-        assignment_metadata = pd.DataFrame(np.repeat(assignment_metadata.values, exp_metadata["timepoints"], axis=0), columns=assignment_metadata.columns)
+        assignment_metadata = pd.DataFrame(np.repeat(assignment_metadata.values, exp_metadata["num_frames"], axis=0), columns=assignment_metadata.columns)
         assignment_metadata["timepoints"] = timepoints
-        assignment_metadata = assignment_metadata.set_index("trenchid", "timepoints")
+        assignment_metadata = assignment_metadata.set_index(["trenchid", "timepoints"])
         
 
         self.meta_handle.write_df("kymograph",assignment_metadata,metadata=exp_metadata)
-        return channel_paths_by_file_index
+        return channel_tidx_paths_by_file_index
 
     def extract(self, dask_controller, filename_format_string):
-        writedir(self.hdf5path,overwrite=True)
+        writedir(self.kymographpath ,overwrite=True)
         parser = compile(filename_format_string)
         tiff_files = []
         for root, _, files in os.walk(self.tiffpath):
             tiff_files.extend([os.path.join(root, f) for f in files if ".tif" in os.path.splitext(f)[1]])
             
         
-        metadf = self.meta_handle.read_df("global",read_metadata=True)
+        metadf = self.meta_handle.read_df("kymograph",read_metadata=True)
         self.metadata = metadf.metadata
 
         def writehdf5(fidx_channels_paths):
             y_dim = self.metadata['height']
             x_dim = self.metadata['width']
+            time = self.metadata['num_frames']
             num_channels = len(self.all_channels)
             
-            file_idx, channels, filepaths = fidx_channels_paths
+            file_idx, row, channels, trench_indices, filepaths = fidx_channels_paths
             datasets = {}
-            with h5py_cache.File(self.kymographpath + "/kymograph_" + str(file_idx) + ".hdf5","w",chunk_cache_mem_size=self.chunk_cache_mem_size) as h5pyfile:
+            with h5py_cache.File(self.kymographpath + "/kymograph_processed_" + str(file_idx) + ".hdf5","w",chunk_cache_mem_size=self.chunk_cache_mem_size) as h5pyfile:
                 for i,channel in enumerate(self.all_channels):
-                    hdf5_dataset = h5pyfile.create_dataset(str(channel),\
-                    (len(filepaths)/num_channels,y_dim,x_dim), chunks=self.chunk_shape, dtype='uint16')
+                    hdf5_dataset = h5pyfile.create_dataset(str(row) + "/" + str(channel),\
+                    (len(filepaths)/num_channels,time,y_dim,x_dim), chunks=self.output_chunk_shape, dtype='uint16')
                     datasets[channel] = hdf5_dataset
                 for i in range(len(filepaths)):
                     curr_channel = channels[i]
                     curr_file = filepaths[i]
-                    datasets[curr_channel][:,:,:] = imread(curr_file)
+                    curr_trench = trench_indices[i]
+                    datasets[str(row) + "/" + curr_channel][curr_trench,:,:,:] = imread(curr_file)
             return "Done."
