@@ -182,6 +182,9 @@ class tiff_to_hdf5_extractor:
             for key, value in fov_frame_dict.items():
                 fov_metadata[key].append(value)
             fov_metadata["Image Path"].append(f)
+        if "lane" not in fov_metadata:
+            fov_metadata["lane"] = [1]*len(tiff_files)
+            
         fov_metadata = pd.DataFrame(fov_metadata)
         
         exp_metadata["frames"] = sorted(list(pd.unique(fov_metadata["timepoints"])))
