@@ -143,16 +143,17 @@ class tiff_to_hdf5_extractor:
     
     def assignidx(self,metadf):
         outdf = copy.deepcopy(metadf)
+        numchannels = len(pd.unique(metadf["channel"]))
         numfovs = len(metadf.index.get_level_values("fov").unique())
         timepoints_per_fov = len(metadf.index.get_level_values("timepoints").unique())
         files_per_fov = (timepoints_per_fov//self.tpts_per_file) + 1
         remainder = timepoints_per_fov%self.tpts_per_file
         
-        fov_file_idx = np.repeat(list(range(files_per_fov)), self.tpts_per_file)[:-(self.tpts_per_file-remainder)]
+        fov_file_idx = np.repeat(list(range(files_per_fov)), self.tpts_per_file*numchannels)[:-(self.tpts_per_file-remainder)*numchannels]
         file_idx = np.concatenate([fov_file_idx+(fov_idx*files_per_fov) for fov_idx in range(numfovs)])
         
-        fov_img_idx = np.repeat(np.array(list(range(self.tpts_per_file)))[np.newaxis,:],files_per_fov,axis=0)
-        fov_img_idx = fov_img_idx.flatten()[:-(self.tpts_per_file-remainder)]
+        fov_img_idx = np.repeat(np.repeat(np.array(list(range(self.tpts_per_file))), numchannels)[np.newaxis,:],files_per_fov,axis=0)
+        fov_img_idx = fov_img_idx.flatten()[:-(self.tpts_per_file-remainder)*numchannels]
         img_idx = np.concatenate([fov_img_idx for fov_idx in range(numfovs)])
         outdf["File Index"] = file_idx
         outdf["Image Index"] = img_idx
@@ -174,33 +175,48 @@ class tiff_to_hdf5_extractor:
         self.chunk_cache_mem_size = 2*chunk_bytes
         exp_metadata["chunk_shape"],exp_metadata["chunk_cache_mem_size"] = (self.chunk_shape,self.chunk_cache_mem_size)
 
-        fov_metadata = dict([(key, [value]) for key, value in parser.parse(tiff_files[0]).named.items()])
+        fov_metadata = dict([(key, [value]) for key, value in parser.search(tiff_files[0]).named.items()])
         fov_metadata["Image Path"] = [tiff_files[0]]
-        for f in tiff_files:
-            fov_frame_dict = parser.parse(f).named
-            for key, value in fov_frame_dict:
+        for f in tiff_files[1:]:
+            fov_frame_dict = parser.search(f).named
+            for key, value in fov_frame_dict.items():
                 fov_metadata[key].append(value)
             fov_metadata["Image Path"].append(f)
         fov_metadata = pd.DataFrame(fov_metadata)
         
         exp_metadata["frames"] = sorted(list(pd.unique(fov_metadata["timepoints"])))
-        exp_metadata["fields_of_view"] = sorted(list(pd.unique(fov_metadata["fov"])))
         exp_metadata["num_frames"] = len(exp_metadata["frames"])
-        exp_metadata["num_fovs"] = len(exp_metadata["fields_of_view"])
         exp_metadata["channels"] = list(pd.unique(fov_metadata["channel"]))
+        
+        fov_metadata = fov_metadata.set_index(["lane", "fov"]).sort_values("timepoints").sort_index()
+        old_labels = [list(frozen_array) for frozen_array in fov_metadata.index.unique().labels]
+        old_labels = list(zip(old_labels[0], old_labels[1]))
+        label_mapping = {}
+        for i in range(len(old_labels)):
+            label_mapping[old_labels[i]] = i
+        old_labels = np.array(fov_metadata.index.labels).T
+        new_labels = np.empty(old_labels.shape[0])
+        for i in range(old_labels.shape[0]):
+            old_label = (old_labels[i, 0], old_labels[i, 1])
+            new_labels[i] = label_mapping[old_label]
+        fov_metadata = fov_metadata.reset_index()
+        fov_metadata["fov"] = new_labels
+        exp_metadata["fields_of_view"] = sorted(list(pd.unique(fov_metadata["fov"])))
+        exp_metadata["num_fovs"] = len(exp_metadata["fields_of_view"])
         
         self.meta_handle = pandas_hdf5_handler(self.metapath)
         
-        assignment_metadata = self.assignidx(fov_metadata)
+        assignment_metadata = self.assignidx(fov_metadata.set_index(["fov", "timepoints"]))
         channel_paths_by_file_index = assignment_metadata.reset_index()[["File Index", "channel", "Image Path"]].set_index("File Index")
-        channel_paths_by_file_index = [(file_index, list(paths_by_file_index.loc[file_index]["channel"], list(paths_by_file_index.loc[file_index]["Image Path"])) for file_index in paths_by_file_index.index.unique("File Index")]
-        assignment_metadata = assignment_metadata.drop_duplicates(subset=["fov", "timepoints"])
+        channel_paths_by_file_index = [(file_index, list(channel_paths_by_file_index.loc[file_index]["channel"]), list(channel_paths_by_file_index.loc[file_index]["Image Path"])) for file_index in channel_paths_by_file_index.index.unique("File Index")]
+        assignment_metadata = assignment_metadata.drop_duplicates(subset=["File Index", "Image Index"])
+        assignment_metadata = assignment_metadata[["lane", "File Index", "Image Index"]]
 
         self.meta_handle.write_df("global",assignment_metadata,metadata=exp_metadata)
-
-        return paths_by_file_index
+        return channel_paths_by_file_index
 
     def extract(self, dask_controller, filename_format_string):
+        writedir(self.hdf5path,overwrite=True)
         parser = compile(filename_format_string)
         tiff_files = []
         for root, _, files in os.walk(self.tiffpath):
@@ -212,17 +228,21 @@ class tiff_to_hdf5_extractor:
         self.metadata = metadf.metadata
 
         def writehdf5(fidx_channels_paths):
+            y_dim = self.metadata['height']
+            x_dim = self.metadata['width']
+            num_channels = len(self.metadata["channels"])
+            
             file_idx, channels, filepaths = fidx_channels_paths
             datasets = {}
             with h5py_cache.File(self.hdf5path + "/hdf5_" + str(file_idx) + ".hdf5","w",chunk_cache_mem_size=self.chunk_cache_mem_size) as h5pyfile:
                 for i,channel in enumerate(self.metadata["channels"]):
                     hdf5_dataset = h5pyfile.create_dataset(str(channel),\
-                    (num_entries,y_dim,x_dim), chunks=self.chunk_shape, dtype='uint16')
+                    (len(filepaths)/num_channels,y_dim,x_dim), chunks=self.chunk_shape, dtype='uint16')
                     datasets[channel] = hdf5_dataset
                 for i in range(len(filepaths)):
                     curr_channel = channels[i]
                     curr_file = filepaths[i]
-                    datasets[channel][i,:,:] = imread(curr_file)
+                    datasets[curr_channel][i//num_channels,:,:] = imread(curr_file)
             return "Done."
         dask_controller.futures["extract file"] = dask_controller.daskclient.map(writehdf5, channel_paths_by_file_index)
 
