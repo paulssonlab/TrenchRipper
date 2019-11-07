@@ -8,10 +8,13 @@ import os
 import pickle
 import sys
 import h5py_cache
+import copy
+from parse import compile
 
 from skimage import filters
 from .cluster import hdf5lock
 from .utils import multifov,pandas_hdf5_handler,writedir
+from tifffile import imread
 
 class kymograph_cluster:
     def __init__(self,headpath="",trenches_per_file=20,paramfile=False,all_channels=[""],trench_len_y=270,padding_y=20,trench_width_x=30,\
@@ -288,30 +291,7 @@ class kymograph_cluster:
             
         return orientations,drop_first_row,drop_last_row
 
-#     def get_manual_orientations(self,trench_edges_y_list,start_above_list,end_above_list,expected_num_rows,top_orientation,orientation_on_fail,y_min_edge_dist):
-#         trench_edges_y = trench_edges_y_list[0]
-#         start_above = start_above_list[0]
-#         end_above = end_above_list[0]
-#         orientations = []
-        
-#         trench_edges_y_no_drift = self.remove_out_of_frame(top_orientation,trench_edges_y,start_above,end_above)
-#         trench_edges_y_no_drift = self.remove_small_rows(trench_edges_y_no_drift,y_min_edge_dist)
-        
-#         if trench_edges_y_no_drift.shape[0]//2 == expected_num_rows:
-#             orientation = top_orientation
-#             for row in range(trench_edges_y_list[0].shape[0]//2):
-#                 orientations.append(orientation)
-#                 orientation = (orientation+1)%2
-#         elif (trench_edges_y_no_drift.shape[0]//2 < expected_num_rows) and orientation_on_fail is not None:
-#             orientation = orientation_on_fail
-#             trench_edges_y_drift = self.remove_out_of_frame(orientation,trench_edges_y,start_above,end_above)
-#             trench_edges_y_drift = self.remove_small_rows(trench_edges_y_drift,y_min_edge_dist)
-#             for row in range(trench_edges_y_drift.shape[0]//2):
-#                 orientations.append(orientation)
-#                 orientation = (orientation+1)%2
-#         else:
-#             print("Start frame does not have expected number of rows!")
-#         return orientations
+
 
     def get_trench_ends(self,trench_edges_y_list,start_above_list,end_above_list,orientations,drop_first_row,drop_last_row,y_min_edge_dist):        
         top_orientation = orientations[0]
@@ -337,21 +317,7 @@ class kymograph_cluster:
             y_ends_list.append(y_ends)
         return y_ends_list
     
-#     def get_trench_ends(self,trench_edges_y_list,start_above_list,end_above_list,orientations,y_min_edge_dist):
-#         top_orientation = orientations[0]
-        
-#         y_ends_list = []
-        
-#         for t,trench_edges_y in enumerate(trench_edges_y_list):
-#             trench_edges_y_repaired = self.remove_out_of_frame(top_orientation,trench_edges_y,start_above_list[t],end_above_list[t])
-#             trench_edges_y_repaired = self.remove_small_rows(trench_edges_y_repaired,y_min_edge_dist)
-#             grouped_edges = trench_edges_y_repaired.reshape(-1,2) # or,2
-#             y_ends = []
-#             for edges,orientation in enumerate(orientations):
-#                 y_ends.append(grouped_edges[edges,orientation])
-#             y_ends = np.array(y_ends)
-#             y_ends_list.append(y_ends)
-#         return y_ends_list
+
 
 
     def get_y_drift(self,y_ends_list):
@@ -477,9 +443,9 @@ class kymograph_cluster:
         
         y_drift = drift_orientation_and_initend_future[0][first_idx:last_idx+1]
         valid_orientations,valid_y_ends = drift_orientation_and_initend_future[1:]
-#         valid_orientations,valid_y_ends_list = drift_orientation_and_initend_future[1:]
+
         drift_corrected_edges = np.add.outer(y_drift,valid_y_ends[0])
-#         drift_corrected_edges = np.add.outer(y_drift,valid_y_ends_list[0])
+
         
         channel_arr_list = []
         for c,channel in enumerate(self.all_channels):
@@ -528,7 +494,7 @@ class kymograph_cluster:
         """
         channel_arr_list,_ = self.crop_y(file_idx,drift_orientation_and_initend_future,padding_y,trench_len_y)
         cropped_in_y = channel_arr_list[0]
-#         cropped_in_y = y_crop_future[0][0] # t x row x y x x     # (24, 1, 330, 2048)   
+ 
         
         x_percentiles_smoothed = []
         for row_num in range(cropped_in_y.shape[1]):
@@ -577,7 +543,7 @@ class kymograph_cluster:
         """
 
         otsu_threshold = sk.filters.threshold_otsu(x_percentiles_t[:,np.newaxis],nbins=otsu_nbins)*otsu_scaling
-#         x_mask = x_percentiles_t<otsu_threshold
+
         x_mask = x_percentiles_t>otsu_threshold
         midpoints = self.get_midpoints_from_mask(x_mask)
         return midpoints
@@ -701,9 +667,7 @@ class kymograph_cluster:
         in_bounds = np.array([midpoints_up[:,valid_mask],\
                             midpoints_dn[:,valid_mask]])
         k_tot = in_bounds.shape[2]
-#         counting_arr = self.init_counting_arr(self.metadata["width"])
-                
-#         kymo_mask = self.get_trench_mask(in_bounds,counting_arr)
+
         x_coords = in_bounds[0].T
         return in_bounds,x_coords,k_tot
     
@@ -722,7 +686,7 @@ class kymograph_cluster:
             trench_width_x (int): Width to be used when cropping in the x-dimension.
         """
         all_midpoints_list = self.compile_midpoint_futures(midpoint_futures)
-#         kymo_mask_list = []
+
         in_bounds_list = []
         x_coords_list = []
         k_tot_list = []
@@ -730,7 +694,7 @@ class kymograph_cluster:
         for row_num,all_midpoints in enumerate(all_midpoints_list):
             x_drift = x_drift_future[row_num]
             in_bounds,x_coords,k_tot = self.get_in_bounds(all_midpoints,x_drift,trench_width_x,trench_present_thr)
-#             kymo_mask_list.append(kymo_mask)
+
             in_bounds_list.append(in_bounds)
             x_coords_list.append(x_coords)
             k_tot_list.append(k_tot)
@@ -850,7 +814,7 @@ class kymograph_cluster:
             for row_num in range(num_rows):
                 in_bounds,k_tot = (in_bounds_list[row_num],k_tot_list[row_num])                
                 kymo_mask = self.get_trench_mask(in_bounds[:,first_idx:last_idx+1],counting_arr)
-#                 kymo_mask = kymo_mask[:,first_idx:last_idx+1]
+
                 self.crop_with_k_masks(output_kymograph,channel_arr_list,kymo_mask,k_tot,row_num)
                 
         return lane_y_coords_list
@@ -918,18 +882,18 @@ class kymograph_cluster:
         
         ### smoothed y percentiles ###
         
-#         random_priorities = np.random.uniform(size=(num_file_jobs,))
+
         for k,file_idx in enumerate(file_list):
-#             priority = random_priorities[k]
+
             future = dask_controller.daskclient.submit(self.get_smoothed_y_percentiles,file_idx,\
                                         self.y_percentile,self.smoothing_kernel_y,retries=1)#,priority=priority)
             dask_controller.futures["Smoothed Y Percentiles: " + str(file_idx)] = future
             
         ### get trench row edges, y midpoints ###
         
-#         random_priorities = np.random.uniform(size=(num_file_jobs,))
+
         for k,file_idx in enumerate(file_list):
-#             priority = random_priorities[k]
+
             smoothed_y_future = dask_controller.futures["Smoothed Y Percentiles: " + str(file_idx)]            
             future = dask_controller.daskclient.submit(self.get_trench_edges_y,smoothed_y_future,self.triangle_nbins,\
                                                        self.triangle_scaling,self.triangle_max_threshold,self.triangle_min_threshold,\
@@ -939,39 +903,24 @@ class kymograph_cluster:
         
         ### get y drift, orientations, init edges ###
         
-#         random_priorities = np.random.uniform(size=(num_fov_jobs,))
+
         for k,fov_idx in enumerate(fov_list):
-#             priority = random_priorities[k]
+
             working_fovdf = fovdf.loc[fov_idx]
             working_files = working_fovdf["File Index"].unique().tolist()
             edges_futures = [dask_controller.futures["Y Trench Edges: " + str(file_idx)] for file_idx in working_files]
             future = dask_controller.daskclient.submit(self.get_ends_and_orientations,fov_idx,edges_futures,self.expected_num_rows,\
                                                        self.top_orientation,self.orientation_on_fail,self.y_min_edge_dist,self.padding_y,self.trench_len_y,retries=1)#,priority=priority)                
             dask_controller.futures["Y Trench Drift, Orientations and Initial Trench Ends: " + str(fov_idx)] = future
-            
-        ### crop y dim ###
-        
-#         random_priorities = np.random.uniform(size=(num_file_jobs,))
-#         for k,file_idx in enumerate(file_list):
-#             priority = random_priorities[k]
-#             working_filedf = filedf.loc[file_idx]
-#             fov_idx = working_filedf["fov"].unique().tolist()[0]
-#             drift_orientation_and_initend_future = dask_controller.futures["Y Trench Drift, Orientations and Initial Trench Ends: " + str(fov_idx)]                        
-#             future = dask_controller.daskclient.submit(self.crop_y,file_idx,drift_orientation_and_initend_future,self.padding_y,\
-#                                                        self.trench_len_y,retries=1,priority=priority)
-#             dask_controller.futures["Y Crop: " + str(file_idx)] = future
+
                         
         ### smoothed x percentiles ###
         
-#         get_smoothed_x_percentiles(self,file_idx,drift_orientation_and_initend_future,padding_y,trench_len_y,x_percentile,background_kernel_x,smoothing_kernel_x)
-        
-#         random_priorities = np.random.uniform(size=(num_file_jobs,))
         for k,file_idx in enumerate(file_list):
-#             priority = random_priorities[k]
             working_filedf = filedf.loc[file_idx]
             fov_idx = working_filedf["fov"].unique().tolist()[0]
             drift_orientation_and_initend_future = dask_controller.futures["Y Trench Drift, Orientations and Initial Trench Ends: " + str(fov_idx)]
-#             y_crop_future = dask_controller.futures["Y Crop: " + str(file_idx)]
+
             future = dask_controller.daskclient.submit(self.get_smoothed_x_percentiles,file_idx,drift_orientation_and_initend_future,\
                                                        self.padding_y,self.trench_len_y,self.x_percentile,self.background_kernel_x,\
                                                        self.smoothing_kernel_x,retries=1)#,priority=priority)
@@ -979,19 +928,17 @@ class kymograph_cluster:
             
         ### get x midpoints ###
 
-#         random_priorities = np.random.uniform(size=(num_file_jobs,))
+
         for k,file_idx in enumerate(file_list):
-#             priority = random_priorities[k]
+
             smoothed_x_future = dask_controller.futures["Smoothed X Percentiles: " + str(file_idx)]            
             future = dask_controller.daskclient.submit(self.get_x_midpoints,smoothed_x_future,\
                                                        self.otsu_nbins,self.otsu_scaling,retries=1)#,priority=priority)
             dask_controller.futures["X Midpoints: " + str(file_idx)] = future
             
         ### get x drift ###
-        
-#         random_priorities = np.random.uniform(size=(num_fov_jobs,))
+
         for k,fov_idx in enumerate(fov_list):
-#             priority = random_priorities[k]
             working_fovdf = fovdf.loc[fov_idx]
             working_files = working_fovdf["File Index"].unique().tolist()
             midpoint_futures = [dask_controller.futures["X Midpoints: " + str(file_idx)] for file_idx in working_files]
@@ -1001,14 +948,9 @@ class kymograph_cluster:
         ### get kymograph masks ###
         
         
-#             crop_x(self,file_idx,drift_orientation_and_initend_future,in_bounds_future,padding_y,trench_len_y)
-    
-#     get_all_in_bounds(self,midpoint_futures,x_drift_future,trench_width_x,trench_present_thr)
-#             return in_bounds_list,x_coords_list,k_tot_list
-        
-#         random_priorities = np.random.uniform(size=(num_fov_jobs,))
+
         for k,fov_idx in enumerate(fov_list):
-#             priority = random_priorities[k]
+
             working_fovdf = fovdf.loc[fov_idx]
             working_files = working_fovdf["File Index"].unique().tolist()
             midpoint_futures = [dask_controller.futures["X Midpoints: " + str(file_idx)] for file_idx in working_files]
@@ -1019,10 +961,7 @@ class kymograph_cluster:
             
         ### crop in x ###
             
-            
-#         random_priorities = np.random.uniform(size=(num_file_jobs,))
         for k,file_idx in enumerate(file_list):
-#             priority = random_priorities[k]
             working_filedf = filedf.loc[file_idx]
             fov_idx = working_filedf["fov"].unique().tolist()[0]
             drift_orientation_and_initend_future = dask_controller.futures["Y Trench Drift, Orientations and Initial Trench Ends: " + str(fov_idx)]
@@ -1033,9 +972,7 @@ class kymograph_cluster:
             
         ### get coords ###
         
-#         random_priorities = np.random.uniform(size=(num_fov_jobs,))
         for k,fov_idx in enumerate(fov_list):
-#             priority = random_priorities[k]
             working_fovdf = fovdf.loc[fov_idx]
             working_files = working_fovdf["File Index"].unique().tolist()
             x_crop_futures = [dask_controller.futures["X Crop: " + str(file_idx)] for file_idx in working_files]
@@ -1408,40 +1345,7 @@ class kymograph_multifov(multifov):
             repaired_trench_edges_y = repaired_trench_edges_y[:-2]
         return orientations,drop_first_row,drop_last_row,repaired_trench_edges_y
         
-#         if start_above and orientations[0] == 0: #if the top is facing down and is cut
-#             orientations = orientations[1:]
-#             repaired_trench_edges_y = repaired_trench_edges_y[2:]
-#         if end_above and orientations[-1] == 1: #if the bottom is facing up and is cut
-#             orientations = orientations[:-1]
-#             repaired_trench_edges_y = repaired_trench_edges_y[:-2]
-#         return orientations,repaired_trench_edges_y
-    
-#     def assign_orientation(self,orientations,repaired_trench_edges_y,start_above,end_above):
-#         """Takes an array of trench row edges and removes the first/last
-#         edge, if that edge does not have a proper partner (i.e. trench row mask
-#         takes value True at boundaries of image).
-        
-#         Args:
-#             edges (array): Array of edges along y-axis.
-#             start_above (bool): True if the trench row mask takes value True at the
-#             starting edge of the mask.
-#             end_above (bool): True if the trench row mask takes value True at the
-#             ending edge of the mask.
-        
-#         Returns:
-#             array: Array of edges along y-axis, corrected for edge pairs that
-#             are out of frame.
-#         """
-#         drop_first_row,drop_last_row = (False,False)
-#         if start_above and orientations[0] == 0: #if the top is facing down and is cut
-#             drop_first_row = True
-#             orientations = orientations[1:]
-#             repaired_trench_edges_y = repaired_trench_edges_y[2:]
-#         if end_above and orientations[-1] == 1: #if the bottom is facing up and is cut
-#             drop_last_row = True
-#             orientations = orientations[:-1]
-#             repaired_trench_edges_y = repaired_trench_edges_y[:-2]
-#         return orientations,drop_first_row,drop_last_row,repaired_trench_edges_y
+
     
     def get_manual_orientations(self,i,trench_edges_y_lists,start_above_lists,end_above_lists,\
                                 expected_num_rows,top_orientation,orientation_on_fail,y_min_edge_dist):
@@ -1453,8 +1357,7 @@ class kymograph_multifov(multifov):
         repaired_trench_edges_y = self.repair_out_of_frame(trench_edges_y,start_above,end_above)
         repaired_trench_edges_y = self.remove_small_rows(repaired_trench_edges_y,y_min_edge_dist)
         
-#         trench_edges_y_no_drift = self.remove_out_of_frame(top_orientation,trench_edges_y,start_above,end_above)
-#         trench_edges_y_no_drift = self.remove_small_rows(trench_edges_y_no_drift,y_min_edge_dist)
+
         
         if repaired_trench_edges_y.shape[0]//2 == expected_num_rows:
             orientation = top_orientation
@@ -1577,34 +1480,7 @@ class kymograph_multifov(multifov):
      
         return valid_y_ends,valid_orientations
 
-# 
-#         valid_edge_mask = []
-#         valid_orientation_mask = []
-#         for i in range(0,len(edge_in_bounds),2):
-#             if np.all(edge_in_bounds[i:i+2]):
-#                 valid_edge_mask+=[True,True]
-#                 valid_orientation_mask+=[True]
-#             else:
-#                 valid_edge_mask+=[False,False]
-#                 valid_orientation_mask+=[False]
 
-#         valid_edges_y_list = [trench_edges_y[valid_edge_mask] for trench_edges_y in trench_edges_y_list]
-        
-    
-#     def get_row_numbers(self,i,trench_edges_y_list):
-#         """Computes the number of trench rows in the fov, from the detected edges.
-        
-#         Args:
-#             i (int): Specifies the current fov index.
-#             trench_edges_y_list (list): List containing, for each fov entry, a list of time-sorted edge arrays.
-        
-#         Returns:
-#             int: The number of trench rows detected in the fov of index i.
-#         """
-#         trench_edges_y = trench_edges_y_list[i]
-#         edge_num_list = [len(item) for item in trench_edges_y]
-#         trench_row_num = (np.median(edge_num_list).astype(int))//2
-#         return trench_row_num
 
     def crop_y(self,i,imported_array_list,y_drift_list,valid_y_ends_list,valid_orientations_list,padding_y,trench_len_y):
         """Performs cropping of the images in the y-dimension.
@@ -1646,7 +1522,7 @@ class kymograph_multifov(multifov):
                     
                 channel_list = []
                 for c in range(imported_array.shape[0]):
-#                     output_array = np.pad(imported_array[c,upper:lower,:,t],((pad, 0),(0,0)),'constant')
+
                     output_array = imported_array[c,upper:lower,:,t]
                     channel_list.append(output_array)
                 row_list.append(channel_list)
@@ -1659,39 +1535,6 @@ class kymograph_multifov(multifov):
         else:
             cropped_in_y = np.moveaxis(cropped_in_y,(0,1,2,3,4),(4,0,1,2,3))
             return cropped_in_y
-        
-#     def crop_trenches_in_y(self,imported_array_list):
-#         """Master function for cropping the input hdf5 file in the y-dimension.
-        
-#         Args:
-#             imported_array_list (list): List containing, for each fov entry, a numpy array containing
-#             the corresponding hdf5 file image data.
-        
-#         Returns:
-#             list: List containing, for each fov entry, a y-cropped numpy array of shape (rows,channels,x,y,t).
-#         """        
-#         y_percentiles_smoothed_list = self.map_to_fovs(self.get_smoothed_y_percentiles,imported_array_list,\
-#                                                        self.y_percentile,self.smoothing_kernel_y)
-        
-#         get_trench_edges_y_output = self.map_to_fovs(self.get_trench_edges_y,y_percentiles_smoothed_list,self.triangle_nbins,self.triangle_scaling,self.triangle_max_threshold,self.triangle_min_threshold)
-#         trench_edges_y_lists = [item[0] for item in get_trench_edges_y_output]
-#         start_above_lists = [item[1] for item in get_trench_edges_y_output]
-#         end_above_lists = [item[2] for item in get_trench_edges_y_output]
-                
-#         orientations_list = self.map_to_fovs(self.get_manual_orientations,trench_edges_y_lists,start_above_lists,end_above_lists,self.expected_num_rows,\
-#                                              self.orientation_detection,self.orientation_on_fail,self.y_min_edge_dist)
-        
-#         y_ends_lists = self.map_to_fovs(self.get_trench_ends,trench_edges_y_lists,start_above_lists,end_above_lists,orientations_list,self.y_min_edge_dist)
-
-#         y_drift_list = self.map_to_fovs(self.get_y_drift,y_ends_lists)
-        
-#         keep_in_frame_kernels_output = self.map_to_fovs(self.keep_in_frame_kernels,y_ends_lists,y_drift_list,imported_array_list,orientations_list,self.padding_y,self.trench_len_y)
-#         valid_y_ends_lists = [item[0] for item in keep_in_frame_kernels_output]
-#         valid_orientations_list = [item[1] for item in keep_in_frame_kernels_output]
-        
-#         cropped_in_y_list = self.map_to_fovs(self.crop_y,imported_array_list,y_drift_list,valid_y_ends_lists,orientations_list,self.padding_y,self.trench_len_y)
-        
-#         return cropped_in_y_list
     
     def get_smoothed_x_percentiles(self,i,cropped_in_y_list,x_percentile,background_kernel_x,smoothing_kernel_x):
         """Summary
@@ -1756,7 +1599,7 @@ class kymograph_multifov(multifov):
             array: array of trench midpoint x positions.
         """
         otsu_threshold = sk.filters.threshold_otsu(x_percentiles_t[:,np.newaxis],nbins=otsu_nbins)*otsu_scaling
-#         x_mask = x_percentiles_t<otsu_threshold
+
         x_mask = x_percentiles_t>otsu_threshold
         midpoints = self.get_midpoints_from_mask(x_mask)
         return midpoints,otsu_threshold
@@ -2014,3 +1857,144 @@ class kymograph_multifov(multifov):
         cropped_in_x_list = self.crop_trenches_in_x(cropped_in_y_list)
         
         return cropped_in_x_list
+
+class tiff_sequence_kymograph():
+    def __init__(self, headpath, tiffpath, all_channels, trenches_per_file=100):
+        self.headpath = headpath
+        self.kymographpath = self.headpath + "/kymograph"
+        self.hdf5path = self.headpath + "/hdf5"
+        self.all_channels = all_channels
+        self.tiffpath = tiffpath
+        self.metapath = self.headpath + "/metadata.hdf5"
+        self.meta_handle = pandas_hdf5_handler(self.metapath)
+        self.trenches_per_file = trenches_per_file
+    
+    def assignidx(self, metadf):
+        outdf = copy.deepcopy(metadf)
+        numchannels = len(pd.unique(metadf["channel"]))
+        num_total_files = (outdf.shape[0]//(self.trenches_per_file*numchannels)) + 1
+        remainder = (outdf.shape[0]//numchannels)%(self.trenches_per_file)
+
+        trench_file_idx = np.repeat(list(range(num_total_files)), self.trenches_per_file*numchannels)[:-(self.trenches_per_file-remainder)*numchannels]
+
+        trench_file_trench_idx = np.repeat(np.repeat(np.array(list(range(self.trenches_per_file))), numchannels)[np.newaxis,:],num_total_files,axis=0)
+        trench_file_trench_idx = trench_file_trench_idx.flatten()[:-(self.trenches_per_file-remainder)*numchannels]
+
+        outdf["File Index"] = trench_file_idx
+        outdf["File Trench Index"] = trench_file_trench_idx
+        return outdf
+
+    def writemetadata(self, parser, tiff_files):
+        kymograph_metadata = {}
+        exp_metadata = {}
+        first_img = imread(tiff_files[0])
+        exp_metadata["num_frames"] = first_img.shape[0]
+        exp_metadata["height"] = first_img.shape[1]
+        exp_metadata["width"] = first_img.shape[2]
+
+        self.output_chunk_shape = (1,1,first_img.shape[1],first_img.shape[2])
+        self.output_chunk_bytes = (2*np.multiply.accumulate(np.array(self.output_chunk_shape))[-1])
+        self.chunk_cache_mem_size = 2*self.output_chunk_bytes
+        
+        kymograph_metadata = dict([(key, [value]) for key, value in parser.search(tiff_files[0]).named.items()])
+        kymograph_metadata["Image Path"] = [tiff_files[0]]
+        kymograph_metadata["Image Path"] = [tiff_files[0]]
+        for f in tiff_files[1:]:
+            fov_frame_dict = parser.search(f).named
+            for key, value in fov_frame_dict.items():
+                kymograph_metadata[key].append(value)
+            kymograph_metadata["Image Path"].append(f)
+        if "lane" not in kymograph_metadata:
+            kymograph_metadata["lane"] = [1]*len(tiff_files)
+        if "row" not in kymograph_metadata:
+            kymograph_metadata["row"] = [0]*len(tiff_files)
+        
+        kymograph_metadata = pd.DataFrame(kymograph_metadata)
+
+        old_labels_fov = [list(frozen_array) for frozen_array in kymograph_metadata.set_index(["lane", "fov"]).index.unique().labels]
+        old_labels_trench = [list(frozen_array) for frozen_array in kymograph_metadata.set_index(["lane", "fov", "trench"]).index.unique().labels]
+        old_labels_fov = list(zip(old_labels_fov[0], old_labels_fov[1]))
+        old_labels_trench = list(zip(old_labels_trench[0], old_labels_trench[1], old_labels_trench[2]))
+        
+        fov_label_mapping = {}
+        trench_label_mapping = {}
+
+        for i in range(len(old_labels_fov)):
+            fov_label_mapping[old_labels_fov[i]] = i
+        for i in range(len(old_labels_trench)):
+            trench_label_mapping[old_labels_trench[i]] = i
+            
+        old_labels_fov = np.array(kymograph_metadata.set_index(["lane", "fov"]).index.labels).T
+        old_labels_trench = np.array(kymograph_metadata.set_index(["lane", "fov", "trench"]).index.labels).T
+
+        new_labels_fov = np.empty(old_labels_fov.shape[0])
+        new_labels_trench = np.empty(old_labels_fov.shape[0])
+
+        for i in range(old_labels_fov.shape[0]):
+            old_label = (old_labels_fov[i, 0], old_labels_fov[i, 1])
+            new_labels_fov[i] = fov_label_mapping[old_label]
+            
+            old_label = (old_labels_trench[i, 0], old_labels_trench[i, 1], old_labels_trench[i, 2])
+            new_labels_trench[i] = trench_label_mapping[old_label]
+
+        kymograph_metadata = kymograph_metadata.reset_index()
+        kymograph_metadata["fov"] = new_labels_fov
+        kymograph_metadata["trenchid"] = new_labels_trench
+
+        exp_metadata["fields_of_view"] = sorted(list(pd.unique(kymograph_metadata["fov"])))
+        exp_metadata["num_fovs"] = len(exp_metadata["fields_of_view"])
+        exp_metadata["channels"] = list(pd.unique(kymograph_metadata["channel"]))
+
+        self.meta_handle = pandas_hdf5_handler(self.metapath)
+        
+        assignment_metadata = self.assignidx(kymograph_metadata.set_index(["trenchid"]))
+        
+        channel_tidx_paths_by_file_index = assignment_metadata.reset_index()[["File Index", "row", "channel", "File Trench Index", "Image Path"]].set_index(["File Index", "row"])
+        indices = [list(frozenlist) for frozenlist in channel_tidx_paths_by_file_index.index.unique().labels]
+        indices = list(zip(indices[0], indices[1]))
+        channel_tidx_paths_by_file_index = [(file_index, row, list(channel_tidx_paths_by_file_index.loc[file_index, row]["channel"]), list(channel_tidx_paths_by_file_index.loc[file_index, row]["File Trench Index"]), list(channel_tidx_paths_by_file_index.loc[file_index, row]["Image Path"])) for file_index, row, in indices]
+
+        assignment_metadata = assignment_metadata.drop_duplicates(subset=["File Index", "File Trench Index"])
+        assignment_metadata = assignment_metadata[["fov", "row", "trench", "File Index", "File Trench Index"]]
+
+        timepoints = np.repeat(np.array(list(range(exp_metadata["num_frames"])))[np.newaxis,:], assignment_metadata.shape[0], axis=0).flatten()
+
+        assignment_metadata = assignment_metadata.reset_index()
+        assignment_metadata = pd.DataFrame(np.repeat(assignment_metadata.values, exp_metadata["num_frames"], axis=0), columns=assignment_metadata.columns)
+        assignment_metadata["timepoints"] = timepoints
+        assignment_metadata = assignment_metadata.set_index(["trenchid", "timepoints"])
+        
+
+        self.meta_handle.write_df("kymograph",assignment_metadata,metadata=exp_metadata)
+        return channel_tidx_paths_by_file_index
+
+    def extract(self, dask_controller, filename_format_string):
+        writedir(self.kymographpath ,overwrite=True)
+        parser = compile(filename_format_string)
+        tiff_files = []
+        for root, _, files in os.walk(self.tiffpath):
+            tiff_files.extend([os.path.join(root, f) for f in files if ".tif" in os.path.splitext(f)[1]])
+            
+        
+        metadf = self.meta_handle.read_df("kymograph",read_metadata=True)
+        self.metadata = metadf.metadata
+
+        def writehdf5(fidx_channels_paths):
+            y_dim = self.metadata['height']
+            x_dim = self.metadata['width']
+            time = self.metadata['num_frames']
+            num_channels = len(self.all_channels)
+            
+            file_idx, row, channels, trench_indices, filepaths = fidx_channels_paths
+            datasets = {}
+            with h5py_cache.File(self.kymographpath + "/kymograph_processed_" + str(file_idx) + ".hdf5","w",chunk_cache_mem_size=self.chunk_cache_mem_size) as h5pyfile:
+                for i,channel in enumerate(self.all_channels):
+                    hdf5_dataset = h5pyfile.create_dataset(str(row) + "/" + str(channel),\
+                    (len(filepaths)/num_channels,time,y_dim,x_dim), chunks=self.output_chunk_shape, dtype='uint16')
+                    datasets[channel] = hdf5_dataset
+                for i in range(len(filepaths)):
+                    curr_channel = channels[i]
+                    curr_file = filepaths[i]
+                    curr_trench = trench_indices[i]
+                    datasets[str(row) + "/" + curr_channel][curr_trench,:,:,:] = imread(curr_file)
+            return "Done."
