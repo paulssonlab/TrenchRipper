@@ -7,25 +7,34 @@ from sklearn import linear_model
 
 def find_seed_image(image_stack, max_poi_std=5):
   # Find a candidate image in the stack (t x y x x)
-  num_points = image_stack.shape[0]
-  for i in range(num_points-1):
-    _, _, std_distance = get_orb_pois(image_stack[i], image_stack[i+1])
-    if std_distance < max_poi_std:
-      seed_index = i
-      break
-    if i == num_points-2:
-      raise Exception("Could not find a suitable seed image in the timeseries")
-  return seed_index
+    num_points = image_stack.shape[0]
+    for i in range(num_points-1):
+        _, _, std_distance = get_orb_pois(image_stack[i], image_stack[i+1])
+        if std_distance < max_poi_std:
+            seed_index = i
+            break
+        if i == num_points-2:
+            raise Exception("Could not find a suitable seed image in the timeseries")
+    return seed_index
+
+def scale_image(im):
+    min_intensity = np.min(im, axis=None)
+    max_intensity = np.max(im, axis=None)
+    scaling_factor = 255/(max_intensity - min_intensity)
+    im_rescaled = (im-min_intensity)*scaling_factor
+    im_rescaled = im_rescaled.astype(np.uint8)
+    return im_rescaled
 
 def get_orb_pois(im1, im2, max_interest_points= 500, match_threshold=0.1):
     orb = cv2.ORB_create(max_interest_points)
+    im1_scaled = scale_image(im1)
+    im2_scaled = scale_image(im2)
     matcher = cv2.DescriptorMatcher_create(cv2.DESCRIPTOR_MATCHER_BRUTEFORCE_HAMMING)
-    keypoints1, descriptors1 = orb.detectAndCompute(im1, None)
-    keypoints2, descriptors2 = orb.detectAndCompute(im2, None)
+    keypoints1, descriptors1 = orb.detectAndCompute(im1_scaled, None)
+    keypoints2, descriptors2 = orb.detectAndCompute(im2_scaled, None)
     matches = matcher.match(descriptors1, descriptors2, None)
   # Sort matches by score
     matches.sort(key=lambda x: x.distance, reverse=False)
-    imMatches = cv2.drawMatches(im1, keypoints1, im2, keypoints2, matches, None)
 
   # Remove not so good matches
     numGoodMatches = int(len(matches) * match_threshold)
@@ -48,13 +57,16 @@ def find_drift_poi(points1, points2):
     return np.array([h[0,2], h[1,2]])
   
 def find_template(reference, check, match_threshold=0.1,window_height=400, window_width=200):
-    points1, points2, _ = get_orb_pois(reference, check, match_threshold=match_threshold)
+    reference_scaled = scale_image(reference)
+    check_scaled = scale_image(check)
+    points1, points2, _ = get_orb_pois(reference_scaled, check_scaled, match_threshold=match_threshold)
     median_position = np.median(points1, axis=0)
-    top_left = np.array([int(median_position[0]-window_width/2), int(median_position[1]-window_height/2)])
-    template = reference[top_left[1]:top_left[1]+window_height,top_left[0]:top_left[0]+window_width]
+    top_left = np.array([max(0, int(median_position[0]-window_width/2)), max(0, int(median_position[1]-window_height/2))])
+    template = reference_scaled[top_left[1]:top_left[1]+window_height,top_left[0]:top_left[0]+window_width]
     return template, top_left
 
 def find_drift_template(template, top_left, im2):
-    res = cv2.matchTemplate(im2, template, cv2.TM_SQDIFF_NORMED)
-    _, _, top_left_new, _ = cv2.minMaxLoc(res)
-    return top_left_new - top_left
+    im2_scaled = scale_image(im2)
+    res = cv2.matchTemplate(im2_scaled, template, cv2.TM_SQDIFF_NORMED)
+    min_sqdiff, _, top_left_new, _ = cv2.minMaxLoc(res)
+    return top_left_new - top_left, min_sqdiff
