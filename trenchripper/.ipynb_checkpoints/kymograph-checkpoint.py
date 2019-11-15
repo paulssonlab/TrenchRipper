@@ -881,31 +881,47 @@ class kymograph_cluster:
         scaled_y_coords = y_coords*pixel_microns
         t_len = scaled_y_coords.shape[0] 
         fs = np.repeat([fov_idx],t_len)
-        global_x,global_y,ts,file_indices,img_indices = (fovdf["x"].values,fovdf["y"].values,fovdf["t"].values,fovdf["File Index"].values,fovdf["Image Index"].values)
-        tpts = np.array(range(ts.shape[0]))
         orit_dict = {0:"top",1:"bottom"}
-
+        tpts = np.array(range(t_len))
+        
+        missing_metadata = ('x' not in fovdf.columns)
+        
+        if not missing_metadata:
+            global_x,global_y,ts,file_indices,img_indices = (fovdf["x"].values,fovdf["y"].values,fovdf["t"].values,fovdf["File Index"].values,fovdf["Image Index"].values)
+        else:
+            file_indices,img_indices = (fovdf["File Index"].values,fovdf["Image Index"].values)
+        
         pd_output = []
 
         for l,x_coord in enumerate(x_coords_list):
             scaled_x_coord = x_coord*pixel_microns
             yt = scaled_y_coords[:,l]
             orit = np.repeat([orit_dict[orientations[l]]],t_len)
-            global_yt = yt+global_y
+            if not missing_metadata:
+                global_yt = yt+global_y
             ls = np.repeat([l],t_len)
             for k in range(scaled_x_coord.shape[0]):
                 xt = scaled_x_coord[k]
-                global_xt = xt+global_x
+                if not missing_metadata:
+                    global_xt = xt+global_x
                 ks = np.repeat([k],t_len)
-                pd_output.append(np.array([fs,ls,ks,tpts,file_indices,img_indices,ts,orit,yt,xt,global_yt,global_xt]).T)
+                if not missing_metadata:
+                    pd_output.append(np.array([fs,ls,ks,tpts,file_indices,img_indices,ts,orit,yt,xt,global_yt,global_xt]).T)
+                else:
+                    pd_output.append(np.array([fs,ls,ks,tpts,file_indices,img_indices,orit,yt,xt]).T)
+                    
         pd_output = np.concatenate(pd_output,axis=0)
-        df = pd.DataFrame(pd_output,columns=["fov","row","trench","timepoints","File Index","Image Index","time (s)","lane orientation","y (local)","x (local)","y (global)","x (global)"])
-        df = df.astype({"fov":int,"row":int,"trench":int,"timepoints":int,"File Index":int,"Image Index":int,"time (s)":float,"lane orientation":str,"y (local)":float,"x (local)":float,\
-                        "y (global)":float,"x (global)":float})
+        if not missing_metadata:
+            df = pd.DataFrame(pd_output,columns=["fov","row","trench","timepoints","File Index","Image Index","time (s)","lane orientation","y (local)","x (local)","y (global)","x (global)"])
+            df = df.astype({"fov":int,"row":int,"trench":int,"timepoints":int,"File Index":int,"Image Index":int,"time (s)":float,"lane orientation":str,"y (local)":float,"x (local)":float,\
+                            "y (global)":float,"x (global)":float})
+        else:
+            df = pd.DataFrame(pd_output,columns=["fov","row","trench","timepoints","File Index","Image Index","lane orientation","y (local)","x (local)"])
+            df = df.astype({"fov":int,"row":int,"trench":int,"timepoints":int,"File Index":int,"Image Index":int,"lane orientation":str,"y (local)":float,"x (local)":float,})
         temp_meta_handle = pandas_hdf5_handler(self.kymographpath + "/temp_metadata_" + str(fov_idx) + ".hdf5")
         temp_meta_handle.write_df("temp",df)
 
-    def generate_kymographs(self,dask_controller,debug_mode=False):
+    def generate_kymographs(self,dask_controller):
         writedir(self.kymographpath,overwrite=True)
         
         dask_controller.futures = {}
@@ -1011,9 +1027,6 @@ class kymograph_cluster:
             
             future = dask_controller.daskclient.submit(self.save_coords,fov_idx,x_crop_futures,in_bounds_future,drift_orientation_and_initend_future,retries=1)#,priority=priority)
             dask_controller.futures["Coords: " + str(fov_idx)] = future
-            
-        if not debug_mode:
-            del dask_controller.futures
             
     def collect_metadata(self):
         fovdf = self.meta_handle.read_df("global",read_metadata=True)
