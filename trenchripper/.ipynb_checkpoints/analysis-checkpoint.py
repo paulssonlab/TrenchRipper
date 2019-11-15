@@ -112,7 +112,7 @@ class kymograph_viewer:
             kymodat = infile[self.channel][trench_idx]
         with h5py.File(self.segpath+"/segmentation_"+str(file_idx)+".hdf5", "r") as infile:
             segdat = infile["data"][trench_idx]
-        segdat = np.array([sk.morphology.label(segdat[t],connectivity=2) for t in range(segdat.shape[0])])
+        segdat = np.array([sk.morphology.label(segdat[t],connectivity=1) for t in range(segdat.shape[0])])
         return kymodat,segdat
     
     def plot_kymograph(self,kymograph):
@@ -125,14 +125,14 @@ class kymograph_viewer:
         img_arr = np.concatenate(list_in_t,axis=1)
         plt.imshow(img_arr)
         
-    def plot_kymograph_data(self,kymodat,segdat):
-        fig=plt.figure(figsize=(20, 6))
+    def plot_kymograph_data(self,kymodat,segdat,x_size=20,y_size=6):
+        fig=plt.figure(figsize=(x_size, y_size))
         fig.add_subplot(2, 1, 1)
         self.plot_kymograph(kymodat)
         fig.add_subplot(2, 1, 2)
         self.plot_kymograph(segdat)
         plt.show()
     
-    def inspect_trench(self,file_idx,trench_idx):
+    def inspect_trench(self,file_idx,trench_idx,x_size=20,y_size=6):
         kymodat,segdat = self.get_kymograph_data(file_idx,trench_idx)
-        self.plot_kymograph_data(kymodat,segdat)
+        self.plot_kymograph_data(kymodat,segdat,x_size=x_size,y_size=y_size)
