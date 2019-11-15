@@ -45,13 +45,13 @@ class regionprops_extractor:
                     all_props_list+=props_list
         
         if self.intensity_channel_list is not None:
-            column_list = ['File Index','File Trench Index','Timepoint','Objectid','Intensity Channel'] + self.props
+            column_list = ['File Index','File Trench Index','timepoints','Objectid','Intensity Channel'] + self.props
             df_out = pd.DataFrame(all_props_list, columns=column_list).reset_index()
         else:
-            column_list = ['File Index','File Trench Index','Timepoint','Objectid'] + self.props
+            column_list = ['File Index','File Trench Index','timepoints','Objectid'] + self.props
             df_out = pd.DataFrame(all_props_list, columns=column_list).reset_index()
         
-        df_out = df_out.set_index(['File Index','File Trench Index','Timepoint','Objectid'], drop=True, append=False, inplace=False)
+        df_out = df_out.set_index(['File Index','File Trench Index','timepoints','Objectid'], drop=True, append=False, inplace=False)
         temp_df_path = self.kymographpath + "/temp_df_" + str(file_idx) + ".pkl"
         df_out.to_pickle(temp_df_path)
         return file_idx
@@ -82,7 +82,13 @@ class regionprops_extractor:
             df_out.append(temp_df)
             os.remove(temp_df_path)
         df_out = pd.concat(df_out)
-        df_out.to_pickle(self.analysispath)
+        
+        kymo_meta = kymo_meta.reset_index(inplace=False)
+        kymo_meta = kymo_meta.set_index(["File Index","File Trench Index","timepoints"], drop=True, append=False, inplace=False)
+        kymo_meta = kymo_meta.sort_index()
+        mergeddf = df_out.join(kymo_meta.reindex(df_out.index))
+        
+        mergeddf.to_pickle(self.analysispath)
     
     def export_all_data(self,n_workers=20,memory='4GB'):        
         
