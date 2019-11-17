@@ -150,12 +150,19 @@ class kymograph_cluster:
                 else:
                     left_idx = i - 1
                     right_idx = i + 1
-                    while np.isnan(drifts[right_idx, 0]):
+                    while np.isnan(drifts[right_idx, 0]) and right_idx < img_arr.shape[0]-1:
                         right_idx += 1
-                    while np.isnan(drifts[left_idx, 0]):
+                    while np.isnan(drifts[left_idx, 0]) and left_idx > 0:
                         left_idx -= 1
-                    for j in range(left_idx+1, right_idx):
-                        drifts[j,:] = drifts[left_idx,:] + (drifts[right_idx,:]-drifts[left_idx,:]) * (j-left_idx)/(right_idx-left_idx)
+                    if np.isnan(drifts[right_idx, 0]):
+                        for j in range(left_idx+1, right_idx+1):
+                            drifts[j,:] = drifts[left_idx,:]
+                    elif np.isnan(drifts[left_idx, 0]):
+                        for j in range(left_idx, right_idx):
+                            drifts[j,:] = drifts[right_idx,:]
+                    else:
+                        for j in range(left_idx+1, right_idx):
+                            drifts[j,:] = drifts[left_idx,:] + (drifts[right_idx,:]-drifts[left_idx,:]) * (j-left_idx)/(right_idx-left_idx)
         return drifts
 
     def get_drifts(self, file_idx, seed_idx, max_poi_std=5):
@@ -191,12 +198,19 @@ class kymograph_cluster:
                 else:
                     left_idx = i - 1
                     right_idx = i + 1
-                    while np.isnan(drifts[right_idx, 0]):
+                    while np.isnan(drifts[right_idx, 0]) and right_idx < img_arr.shape[0]-1:
                         right_idx += 1
-                    while np.isnan(drifts[left_idx, 0]):
+                    while np.isnan(drifts[left_idx, 0]) and left_idx > 0:
                         left_idx -= 1
-                    for j in range(left_idx+1, right_idx):
-                        drifts[j,:] = drifts[left_idx,:] + (drifts[right_idx,:]-drifts[left_idx,:]) * (j-left_idx)/(right_idx-left_idx)
+                    if np.isnan(drifts[right_idx, 0]):
+                        for j in range(left_idx+1, right_idx+1):
+                            drifts[j,:] = drifts[left_idx,:]
+                    elif np.isnan(drifts[left_idx, 0]):
+                        for j in range(left_idx, right_idx):
+                            drifts[j,:] = drifts[right_idx,:]
+                    else:
+                        for j in range(left_idx+1, right_idx):
+                            drifts[j,:] = drifts[left_idx,:] + (drifts[right_idx,:]-drifts[left_idx,:]) * (j-left_idx)/(right_idx-left_idx)
         return drifts
     
     def link_drifts(self, file_indices, seed_images, within_file_drifts):
