@@ -146,13 +146,14 @@ class hdf5_fov_extractor:
         self.meta_handle.write_df("global",outdf,metadata=self.metadata)
 
 class tiff_to_hdf5_extractor:
-    def __init__(self, headpath, tiffpath, tpts_per_file=100):
+    def __init__(self, headpath, tiffpath, format_string, tpts_per_file=100):
         self.tiffpath = tiffpath
         self.headpath = headpath
         self.metapath = self.headpath + "/metadata.hdf5"
         self.hdf5path = self.headpath + "/hdf5"
         self.tpts_per_file = tpts_per_file
-
+        self.format_string = format_string
+        
     
     def get_notes(self,organism,microscope,notes):
         self.organism = organism
@@ -189,31 +190,38 @@ class tiff_to_hdf5_extractor:
         fov_metadata = {}
         exp_metadata = {}
         assignment_metadata = {}
-        first_img = imread(tiff_files[0])
-        exp_metadata["height"] = first_img.shape[0]
-        exp_metadata["width"] = first_img.shape[1]
-        exp_metadata["Organism"] = self.organism
-        exp_metadata["Microscope"] = self.microscope
-        exp_metadata["Notes"] = self.notes
+        
+        first_successful_file= True
+        for f in tiff_files:
+            match = parser.search(f)
+            if match is not None:
+                if first_successful_file:
+                    first_img = imread(f)
+                    exp_metadata["height"] = first_img.shape[0]
+                    exp_metadata["width"] = first_img.shape[1]
+                    exp_metadata["Organism"] = self.organism
+                    exp_metadata["Microscope"] = self.microscope
+                    exp_metadata["Notes"] = self.notes
 
-        self.chunk_shape = (1,exp_metadata["height"],exp_metadata["width"])
-        chunk_bytes = (2*np.multiply.accumulate(np.array(self.chunk_shape))[-1])
-        self.chunk_cache_mem_size = 2*chunk_bytes
-        exp_metadata["chunk_shape"],exp_metadata["chunk_cache_mem_size"] = (self.chunk_shape,self.chunk_cache_mem_size)
+                    self.chunk_shape = (1,exp_metadata["height"],exp_metadata["width"])
+                    chunk_bytes = (2*np.multiply.accumulate(np.array(self.chunk_shape))[-1])
+                    self.chunk_cache_mem_size = 2*chunk_bytes
+                    exp_metadata["chunk_shape"],exp_metadata["chunk_cache_mem_size"] = (self.chunk_shape,self.chunk_cache_mem_size)
 
-        fov_metadata = dict([(key, [value]) for key, value in parser.search(tiff_files[0]).named.items()])
-        fov_metadata["Image Path"] = [tiff_files[0]]
-        for f in tiff_files[1:]:
-            fov_frame_dict = parser.search(f).named
-            for key, value in fov_frame_dict.items():
-                fov_metadata[key].append(value)
-            fov_metadata["Image Path"].append(f)
+                    fov_metadata = dict([(key, [value]) for key, value in match.named.items()])
+                    fov_metadata["Image Path"] = [f]
+                    first_successful_file = False
+                else:
+                    fov_frame_dict = match.named
+                    for key, value in fov_frame_dict.items():
+                        fov_metadata[key].append(value)
+                    fov_metadata["Image Path"].append(f)
         if "lane" not in fov_metadata:
-            fov_metadata["lane"] = [1]*len(tiff_files)
+            fov_metadata["lane"] = [1]*len(fov_metadata["Image Path"])
             
         fov_metadata = pd.DataFrame(fov_metadata)
         
-        exp_metadata["frames"] = sorted(list(pd.unique(fov_metadata["timepoints"])))
+        exp_metadata["frames"] = None
         exp_metadata["num_frames"] = len(exp_metadata["frames"])
         exp_metadata["channels"] = list(pd.unique(fov_metadata["channel"]))
         
@@ -244,9 +252,9 @@ class tiff_to_hdf5_extractor:
         self.meta_handle.write_df("global",assignment_metadata,metadata=exp_metadata)
         return channel_paths_by_file_index
 
-    def extract(self, dask_controller, filename_format_string):
+    def extract(self, dask_controller):
         writedir(self.hdf5path,overwrite=True)
-        parser = compile(filename_format_string)
+        parser = compile(self.format_string)
         tiff_files = []
         for root, _, files in os.walk(self.tiffpath):
             tiff_files.extend([os.path.join(root, f) for f in files if ".tif" in os.path.splitext(f)[1]])
