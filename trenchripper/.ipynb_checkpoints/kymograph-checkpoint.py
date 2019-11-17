@@ -15,7 +15,7 @@ from .utils import multifov,pandas_hdf5_handler,writedir
 
 class kymograph_cluster:
     def __init__(self,headpath="",trenches_per_file=20,paramfile=False,all_channels=[""],trench_len_y=270,padding_y=20,trench_width_x=30,\
-                 t_range=(0,None),y_percentile=85,y_min_edge_dist=50,smoothing_kernel_y=(1,9),triangle_nbins=50,triangle_scaling=1.,\
+                 t_range=(0,None),invert=False,y_percentile=85,y_min_edge_dist=50,smoothing_kernel_y=(1,9),triangle_nbins=50,triangle_scaling=1.,\
                  triangle_max_threshold=0,triangle_min_threshold=65535,top_orientation=0,expected_num_rows=None,orientation_on_fail=None,\
                  x_percentile=85,background_kernel_x=(1,21),smoothing_kernel_x=(1,9),otsu_nbins=50,otsu_scaling=1.,trench_present_thr=0.):
         
@@ -29,6 +29,7 @@ class kymograph_cluster:
             padding_y = param_dict["Y Padding"]
             trench_width_x = param_dict["Trench Width"]
             t_range = param_dict["Time Range"]
+            invert = param_dict["Invert"]
             y_percentile = param_dict["Y Percentile"]
             y_min_edge_dist = param_dict["Minimum Trench Length"]
             smoothing_kernel_y = (1,param_dict["Y Smoothing Kernel"])
@@ -56,6 +57,7 @@ class kymograph_cluster:
         self.trenches_per_file = trenches_per_file
 
         self.t_range = t_range
+        self.invert = invert
 
         #### important paramaters to set
         self.trench_len_y = trench_len_y
@@ -95,7 +97,7 @@ class kymograph_cluster:
         self.output_chunk_cache_mem_size = 2*self.output_chunk_bytes
         
         self.kymograph_params = {"trench_len_y":trench_len_y,"padding_y":padding_y,"ttl_len_y":ttl_len_y,\
-                                 "trench_width_x":trench_width_x,"y_percentile":y_percentile,\
+                                 "trench_width_x":trench_width_x,"y_percentile":y_percentile,"invert":invert,\
                              "y_min_edge_dist":y_min_edge_dist,"smoothing_kernel_y":smoothing_kernel_y,\
                                  "triangle_nbins":triangle_nbins,"triangle_scaling":triangle_scaling,\
                                  "triangle_max_threshold":triangle_max_threshold,"triangle_min_threshold":triangle_min_threshold,\
@@ -141,6 +143,8 @@ class kymograph_cluster:
         """
         with h5py_cache.File(self.hdf5path+"/hdf5_"+str(file_idx)+".hdf5","r",chunk_cache_mem_size=self.metadata["chunk_cache_mem_size"]) as imported_hdf5_handle:
             img_arr = imported_hdf5_handle[self.seg_channel][:] #t x y
+            if self.invert:
+                img_arr = sk.util.invert(img_arr)
             perc_arr = np.percentile(img_arr,y_percentile,axis=2,interpolation='lower')
             y_percentiles_smoothed = self.median_filter_2d(perc_arr,smoothing_kernel_y)
 <<<<<<< HEAD
@@ -537,6 +541,8 @@ class kymograph_cluster:
         
         channel_arr_list,_ = self.crop_y(file_idx,drift_orientation_and_initend_future,padding_y,trench_len_y)
         cropped_in_y = channel_arr_list[0]
+        if self.invert:
+            cropped_in_y = sk.util.invert(cropped_in_y)
 #         cropped_in_y = y_crop_future[0][0] # t x row x y x x     # (24, 1, 330, 2048)   
         
         x_percentiles_smoothed = []
@@ -884,27 +890,43 @@ class kymograph_cluster:
         scaled_y_coords = y_coords*pixel_microns
         t_len = scaled_y_coords.shape[0] 
         fs = np.repeat([fov_idx],t_len)
-        global_x,global_y,ts,file_indices,img_indices = (fovdf["x"].values,fovdf["y"].values,fovdf["t"].values,fovdf["File Index"].values,fovdf["Image Index"].values)
-        tpts = np.array(range(ts.shape[0]))
         orit_dict = {0:"top",1:"bottom"}
-
+        tpts = np.array(range(t_len))
+        
+        missing_metadata = ('x' not in fovdf.columns)
+        
+        if not missing_metadata:
+            global_x,global_y,ts,file_indices,img_indices = (fovdf["x"].values,fovdf["y"].values,fovdf["t"].values,fovdf["File Index"].values,fovdf["Image Index"].values)
+        else:
+            file_indices,img_indices = (fovdf["File Index"].values,fovdf["Image Index"].values)
+        
         pd_output = []
 
         for l,x_coord in enumerate(x_coords_list):
             scaled_x_coord = x_coord*pixel_microns
             yt = scaled_y_coords[:,l]
             orit = np.repeat([orit_dict[orientations[l]]],t_len)
-            global_yt = yt+global_y
+            if not missing_metadata:
+                global_yt = yt+global_y
             ls = np.repeat([l],t_len)
             for k in range(scaled_x_coord.shape[0]):
                 xt = scaled_x_coord[k]
-                global_xt = xt+global_x
+                if not missing_metadata:
+                    global_xt = xt+global_x
                 ks = np.repeat([k],t_len)
-                pd_output.append(np.array([fs,ls,ks,tpts,file_indices,img_indices,ts,orit,yt,xt,global_yt,global_xt]).T)
+                if not missing_metadata:
+                    pd_output.append(np.array([fs,ls,ks,tpts,file_indices,img_indices,ts,orit,yt,xt,global_yt,global_xt]).T)
+                else:
+                    pd_output.append(np.array([fs,ls,ks,tpts,file_indices,img_indices,orit,yt,xt]).T)
+                    
         pd_output = np.concatenate(pd_output,axis=0)
-        df = pd.DataFrame(pd_output,columns=["fov","row","trench","timepoints","File Index","Image Index","time (s)","lane orientation","y (local)","x (local)","y (global)","x (global)"])
-        df = df.astype({"fov":int,"row":int,"trench":int,"timepoints":int,"File Index":int,"Image Index":int,"time (s)":float,"lane orientation":str,"y (local)":float,"x (local)":float,\
-                        "y (global)":float,"x (global)":float})
+        if not missing_metadata:
+            df = pd.DataFrame(pd_output,columns=["fov","row","trench","timepoints","File Index","Image Index","time (s)","lane orientation","y (local)","x (local)","y (global)","x (global)"])
+            df = df.astype({"fov":int,"row":int,"trench":int,"timepoints":int,"File Index":int,"Image Index":int,"time (s)":float,"lane orientation":str,"y (local)":float,"x (local)":float,\
+                            "y (global)":float,"x (global)":float})
+        else:
+            df = pd.DataFrame(pd_output,columns=["fov","row","trench","timepoints","File Index","Image Index","lane orientation","y (local)","x (local)"])
+            df = df.astype({"fov":int,"row":int,"trench":int,"timepoints":int,"File Index":int,"Image Index":int,"lane orientation":str,"y (local)":float,"x (local)":float,})
         temp_meta_handle = pandas_hdf5_handler(self.kymographpath + "/temp_metadata_" + str(fov_idx) + ".hdf5")
         temp_meta_handle.write_df("temp",df)
 
@@ -927,124 +949,85 @@ class kymograph_cluster:
         
         ### smoothed y percentiles ###
         
-#         random_priorities = np.random.uniform(size=(num_file_jobs,))
         for k,file_idx in enumerate(file_list):
-#             priority = random_priorities[k]
             future = dask_controller.daskclient.submit(self.get_smoothed_y_percentiles,file_idx,\
-                                        self.y_percentile,self.smoothing_kernel_y,retries=1)#,priority=priority)
+                                        self.y_percentile,self.smoothing_kernel_y,retries=1)
             dask_controller.futures["Smoothed Y Percentiles: " + str(file_idx)] = future
             
         ### get trench row edges, y midpoints ###
         
-#         random_priorities = np.random.uniform(size=(num_file_jobs,))
         for k,file_idx in enumerate(file_list):
-#             priority = random_priorities[k]
             smoothed_y_future = dask_controller.futures["Smoothed Y Percentiles: " + str(file_idx)]            
             future = dask_controller.daskclient.submit(self.get_trench_edges_y,smoothed_y_future,self.triangle_nbins,\
                                                        self.triangle_scaling,self.triangle_max_threshold,self.triangle_min_threshold,\
-                                                       self.y_min_edge_dist,retries=1)#,priority=priority)
+                                                       self.y_min_edge_dist,retries=1)
             
             dask_controller.futures["Y Trench Edges: " + str(file_idx)] = future   
         
         ### get y drift, orientations, init edges ###
         
-#         random_priorities = np.random.uniform(size=(num_fov_jobs,))
         for k,fov_idx in enumerate(fov_list):
-#             priority = random_priorities[k]
             working_fovdf = fovdf.loc[fov_idx]
             working_files = working_fovdf["File Index"].unique().tolist()
             edges_futures = [dask_controller.futures["Y Trench Edges: " + str(file_idx)] for file_idx in working_files]
             future = dask_controller.daskclient.submit(self.get_ends_and_orientations,fov_idx,edges_futures,self.expected_num_rows,\
-                                                       self.top_orientation,self.orientation_on_fail,self.y_min_edge_dist,self.padding_y,self.trench_len_y,retries=1)#,priority=priority)                
+                                                       self.top_orientation,self.orientation_on_fail,self.y_min_edge_dist,self.padding_y,self.trench_len_y,retries=1)               
             dask_controller.futures["Y Trench Drift, Orientations and Initial Trench Ends: " + str(fov_idx)] = future
-            
-        ### crop y dim ###
-        
-#         random_priorities = np.random.uniform(size=(num_file_jobs,))
-#         for k,file_idx in enumerate(file_list):
-#             priority = random_priorities[k]
-#             working_filedf = filedf.loc[file_idx]
-#             fov_idx = working_filedf["fov"].unique().tolist()[0]
-#             drift_orientation_and_initend_future = dask_controller.futures["Y Trench Drift, Orientations and Initial Trench Ends: " + str(fov_idx)]                        
-#             future = dask_controller.daskclient.submit(self.crop_y,file_idx,drift_orientation_and_initend_future,self.padding_y,\
-#                                                        self.trench_len_y,retries=1,priority=priority)
-#             dask_controller.futures["Y Crop: " + str(file_idx)] = future
                         
         ### smoothed x percentiles ###
-        
-#         get_smoothed_x_percentiles(self,file_idx,drift_orientation_and_initend_future,padding_y,trench_len_y,x_percentile,background_kernel_x,smoothing_kernel_x)
-        
-#         random_priorities = np.random.uniform(size=(num_file_jobs,))
+                
         for k,file_idx in enumerate(file_list):
-#             priority = random_priorities[k]
             working_filedf = filedf.loc[file_idx]
             fov_idx = working_filedf["fov"].unique().tolist()[0]
             drift_orientation_and_initend_future = dask_controller.futures["Y Trench Drift, Orientations and Initial Trench Ends: " + str(fov_idx)]
-#             y_crop_future = dask_controller.futures["Y Crop: " + str(file_idx)]
             future = dask_controller.daskclient.submit(self.get_smoothed_x_percentiles,file_idx,drift_orientation_and_initend_future,\
                                                        self.padding_y,self.trench_len_y,self.x_percentile,self.background_kernel_x,\
-                                                       self.smoothing_kernel_x,retries=1)#,priority=priority)
+                                                       self.smoothing_kernel_x,retries=1)
             dask_controller.futures["Smoothed X Percentiles: " + str(file_idx)] = future
             
         ### get x midpoints ###
 
-#         random_priorities = np.random.uniform(size=(num_file_jobs,))
         for k,file_idx in enumerate(file_list):
-#             priority = random_priorities[k]
             smoothed_x_future = dask_controller.futures["Smoothed X Percentiles: " + str(file_idx)]            
             future = dask_controller.daskclient.submit(self.get_x_midpoints,smoothed_x_future,\
-                                                       self.otsu_nbins,self.otsu_scaling,retries=1)#,priority=priority)
+                                                       self.otsu_nbins,self.otsu_scaling,retries=1)
             dask_controller.futures["X Midpoints: " + str(file_idx)] = future
             
         ### get x drift ###
         
-#         random_priorities = np.random.uniform(size=(num_fov_jobs,))
         for k,fov_idx in enumerate(fov_list):
-#             priority = random_priorities[k]
             working_fovdf = fovdf.loc[fov_idx]
             working_files = working_fovdf["File Index"].unique().tolist()
             midpoint_futures = [dask_controller.futures["X Midpoints: " + str(file_idx)] for file_idx in working_files]
-            future = dask_controller.daskclient.submit(self.get_x_drift,midpoint_futures,retries=1)#,priority=priority)
+            future = dask_controller.daskclient.submit(self.get_x_drift,midpoint_futures,retries=1)
             dask_controller.futures["X Drift: " + str(fov_idx)] = future
         
         ### get kymograph masks ###
         
-        
-#             crop_x(self,file_idx,drift_orientation_and_initend_future,in_bounds_future,padding_y,trench_len_y)
-    
-#     get_all_in_bounds(self,midpoint_futures,x_drift_future,trench_width_x,trench_present_thr)
-#             return in_bounds_list,x_coords_list,k_tot_list
-        
-#         random_priorities = np.random.uniform(size=(num_fov_jobs,))
         for k,fov_idx in enumerate(fov_list):
-#             priority = random_priorities[k]
             working_fovdf = fovdf.loc[fov_idx]
             working_files = working_fovdf["File Index"].unique().tolist()
             midpoint_futures = [dask_controller.futures["X Midpoints: " + str(file_idx)] for file_idx in working_files]
             x_drift_future = dask_controller.futures["X Drift: " + str(fov_idx)]
             future = dask_controller.daskclient.submit(self.get_all_in_bounds,midpoint_futures,x_drift_future,\
-                                                self.trench_width_x,self.trench_present_thr,retries=1)#,priority=priority)
+                                                self.trench_width_x,self.trench_present_thr,retries=1)
             dask_controller.futures["X In Bounds: " + str(fov_idx)] = future
             
         ### crop in x ###
             
             
-#         random_priorities = np.random.uniform(size=(num_file_jobs,))
         for k,file_idx in enumerate(file_list):
-#             priority = random_priorities[k]
             working_filedf = filedf.loc[file_idx]
             fov_idx = working_filedf["fov"].unique().tolist()[0]
             drift_orientation_and_initend_future = dask_controller.futures["Y Trench Drift, Orientations and Initial Trench Ends: " + str(fov_idx)]
             in_bounds_future = dask_controller.futures["X In Bounds: " + str(fov_idx)]
             
-            future = dask_controller.daskclient.submit(self.crop_x,file_idx,drift_orientation_and_initend_future,in_bounds_future,self.padding_y,self.trench_len_y,retries=0)#,priority=priority)
+            future = dask_controller.daskclient.submit(self.crop_x,file_idx,drift_orientation_and_initend_future,in_bounds_future,self.padding_y,self.trench_len_y,retries=0)
             dask_controller.futures["X Crop: " + str(file_idx)] = future
             
         ### get coords ###
         
-#         random_priorities = np.random.uniform(size=(num_fov_jobs,))
         for k,fov_idx in enumerate(fov_list):
-#             priority = random_priorities[k]
             working_fovdf = fovdf.loc[fov_idx]
             working_files = working_fovdf["File Index"].unique().tolist()
             x_crop_futures = [dask_controller.futures["X Crop: " + str(file_idx)] for file_idx in working_files]
@@ -1054,7 +1037,7 @@ class kymograph_cluster:
             future = dask_controller.daskclient.submit(self.save_coords,fov_idx,x_crop_futures,in_bounds_future,drift_orientation_and_initend_future,retries=1)#,priority=priority)
             dask_controller.futures["Coords: " + str(fov_idx)] = future
             
-    def collect_metadata(self,dask_controller):
+    def collect_metadata(self):
         fovdf = self.meta_handle.read_df("global",read_metadata=True)
         fovdf = fovdf.loc[(slice(None), slice(self.t_range[0],self.t_range[1])),:]
         fov_list = fovdf.index.get_level_values("fov").unique().values        
@@ -1168,7 +1151,7 @@ class kymograph_cluster:
 
     def post_process(self,dask_controller):
         dask_controller.daskclient.restart()
-        self.collect_metadata(dask_controller)
+        self.collect_metadata()
         self.reorg_all_kymographs(dask_controller)
         
     def kymo_report(self):
@@ -1240,9 +1223,11 @@ class kymograph_multifov(multifov):
                     file_list += [infile[channel][idx][:,:,np.newaxis] for idx in img_indices]
             channel_list.append(np.concatenate(file_list,axis=2))
         channel_array = np.array(channel_list)
+        if self.invert:
+            channel_array = sk.util.invert(channel_array)
         return channel_array
     
-    def import_hdf5_files(self,all_channels,seg_channel,fov_list,t_range,t_subsample_step):
+    def import_hdf5_files(self,all_channels,seg_channel,invert,fov_list,t_range,t_subsample_step):
         seg_channel_idx = all_channels.index(seg_channel)
         all_channels.insert(0, all_channels.pop(seg_channel_idx))
         self.all_channels = all_channels
@@ -1250,6 +1235,7 @@ class kymograph_multifov(multifov):
         self.fov_list = fov_list
         self.t_range = (t_range[0],t_range[1]+1)
         self.t_subsample_step = t_subsample_step
+        self.invert = invert
         
         super(kymograph_multifov, self).__init__(fov_list)
         

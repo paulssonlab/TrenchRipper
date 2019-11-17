@@ -7,6 +7,6 @@ def plot_kymograph(kymograph):
     Args:
         kymograph (array): kymograph array of shape (y_dim,x_dim,t_dim).
     """
-    list_in_t = [kymograph[:,:,t] for t in range(kymograph.shape[2])]
+    list_in_t = [kymograph[t,:,:] for t in range(kymograph.shape[0])]
     img_arr = np.concatenate(list_in_t,axis=1)
     plt.imshow(img_arr)

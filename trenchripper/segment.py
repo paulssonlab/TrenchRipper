@@ -298,6 +298,14 @@ class fluo_segmentation:
         self.threshold_perc_num_steps = threshold_perc_num_steps
         self.convex_threshold = convex_threshold
     
+    def scale_kymo(self,wrap_arr,percentile):
+        perc_t = np.percentile(wrap_arr[:].reshape(wrap_arr.shape[0],-1),percentile,axis=1)
+        norm_perc_t = perc_t/np.max(perc_t)
+        scaled_arr = wrap_arr.astype(float)/norm_perc_t[:,np.newaxis,np.newaxis]
+        scaled_arr[scaled_arr>255.] = 255.
+        scaled_arr = scaled_arr.astype("uint8")
+        return scaled_arr
+    
     def to_8bit(self,img_arr,bit_max=None):
         img_max = np.max(img_arr)+0.0001
         if bit_max is None:
@@ -310,11 +318,13 @@ class fluo_segmentation:
         norm_byte_array = sk.img_as_ubyte(norm_array)
         return norm_byte_array
     
-    def preprocess_img(self,img_arr,sigma=1.,bit_max=0):
+    def preprocess_img(self,img_arr,sigma=1.,bit_max=0,scale_timepoints=False,scaling_percentage=None):
         img_smooth = copy.copy(img_arr)
         for t in range(img_arr.shape[0]):
-#             img_smooth[t] = sk.filters.gaussian(img_arr[t],sigma=sigma,preserve_range=True,mode='reflect')
             img_smooth[t] = self.to_8bit(sk.filters.gaussian(img_arr[t],sigma=sigma,preserve_range=True,mode='reflect'),bit_max=bit_max)
+        if scale_timepoints:
+            img_smooth = self.scale_kymo(img_smooth,scaling_percentage)
+        
         return img_smooth
 
 #     def cell_region_mask(self,img_arr,method='global',global_scaling=1.,cell_otsu_scaling=1.,local_otsu_r=15):
@@ -435,26 +445,17 @@ class fluo_segmentation:
         conv_weight_arrs = np.array(conv_weight_arrs)
         conv_max_merged = np.max(conv_weight_arrs,axis=0)
         return conv_max_merged
-    
+        
     def segment(self,img_arr): #img_arr is t,y,x
 #         input_kymo = kymo_handle()
 #         input_kymo.import_wrap(img_arr,scale=self.scale_timepoints,scale_perc=self.scaling_percentage)
         t_tot = img_arr.shape[0]
-        working_img = self.preprocess_img(img_arr,sigma=self.smooth_sigma,bit_max=self.bit_max)
-        inverted = np.array([sk.util.invert(working_img[t]) for t in range(working_img.shape[0])])
-#         min_eigvals = np.array([self.hessian_contrast_enc(inverted[t],self.hess_pad) for t in range(inverted.shape[0])])
-        min_eigvals = np.array([self.to_8bit(self.hessian_contrast_enc(inverted[t],self.hess_pad)) for t in range(inverted.shape[0])])
-        del inverted
-        
-#         min_eigvals = self.to_8bit(self.hessian_contrast_enc(inverted,self.hess_pad))
-        
-#         working_img = self.preprocess_img(input_kymo.return_unwrap(padding=self.wrap_pad),sigma=self.smooth_sigma)
-#         del input_kymo
-
-#         inverted = sk.util.invert(working_img)
-#         min_eigvals = self.to_8bit(self.hessian_contrast_enc(inverted,self.hess_pad))
-#         del inverted
+        working_img = self.preprocess_img(img_arr,sigma=self.smooth_sigma,bit_max=self.bit_max,\
+                                         scale_timepoints=self.scale_timepoints,scaling_percentage=self.scaling_percentage) #8_bit 
                 
+        inverted = np.array([sk.util.invert(working_img[t]) for t in range(working_img.shape[0])])
+        min_eigvals = np.array([self.to_8bit(self.hessian_contrast_enc(inverted[t],self.hess_pad)) for t in range(inverted.shape[0])])
+        del inverted        
         cell_mask = self.cell_region_mask(working_img,method=self.cell_mask_method,global_threshold=self.global_threshold,cell_otsu_scaling=self.cell_otsu_scaling,local_otsu_r=self.local_otsu_r)
                 
         mid_threshold_arr = self.get_mid_threshold_arr(min_eigvals,edge_threshold_scaling=self.edge_threshold_scaling,padding=self.wrap_pad)
@@ -483,10 +484,11 @@ class fluo_segmentation:
         output_kymo.import_unwrap(final_mask,t_tot,padding=self.wrap_pad)
         segmented = output_kymo.return_wrap()
         return segmented
+    
 
 class fluo_segmentation_cluster(fluo_segmentation):
     def __init__(self,headpath,paramfile=True,seg_channel="",scale_timepoints=False,scaling_percentage=0.9,smooth_sigma=0.75,bit_max=0,wrap_pad=0,\
-                 hess_pad=6,min_obj_size=30,cell_mask_method='local',global_threshold=1000,cell_otsu_scaling=1.,local_otsu_r=15,\
+                 hess_pad=6,min_obj_size=30,cell_mask_method='local',global_threshold=255,cell_otsu_scaling=1.,local_otsu_r=15,\
                  edge_threshold_scaling=1.,threshold_step_perc=.1,threshold_perc_num_steps=2,convex_threshold=0.8):
         
         if paramfile:
@@ -523,18 +525,18 @@ class fluo_segmentation_cluster(fluo_segmentation):
         self.meta_handle = pandas_hdf5_handler(self.metapath)
 
     def generate_segmentation(self,file_idx):
+        with h5py.File(self.kymographpath + "/kymograph_" + str(file_idx) + ".hdf5","r") as input_file:
+            input_data = input_file[self.seg_channel]
+            trench_output = []
+            for trench_idx in range(input_data.shape[0]):
+                trench_array = input_data[trench_idx]
+                trench_array = self.segment(trench_array)
+                trench_output.append(trench_array[np.newaxis])
+                del trench_array
+        trench_output = np.concatenate(trench_output,axis=0)
         with h5py.File(self.fluorsegmentationpath + "/segmentation_" + str(file_idx) + ".hdf5", "w") as h5pyfile:
-            with h5py.File(self.kymographpath + "/kymograph_" + str(file_idx) + ".hdf5","r") as input_file:
-                input_data = input_file[self.seg_channel]
-                trench_output = []
-                for trench_idx in range(input_data.shape[0]):
-                    trench_array = input_data[trench_idx]
-                    trench_array = self.segment(trench_array)
-                    trench_output.append(trench_array[np.newaxis])
-                    del trench_array
-            trench_output = np.concatenate(trench_output,axis=0)
             hdf5_dataset = h5pyfile.create_dataset("data", data=trench_output, dtype=bool)
-            return "Done"
+        return "Done"
 
     def dask_segment(self,dask_controller):
         writedir(self.fluorsegmentationpath,overwrite=True)
@@ -543,7 +545,7 @@ class fluo_segmentation_cluster(fluo_segmentation):
         kymodf = self.meta_handle.read_df("kymograph",read_metadata=True)
         file_list = kymodf["File Index"].unique().tolist()
         num_file_jobs = len(file_list)
-        
+                
         random_priorities = np.random.uniform(size=(num_file_jobs,))
         for k,file_idx in enumerate(file_list):
             priority = random_priorities[k]
@@ -554,27 +556,6 @@ class fluo_segmentation_cluster(fluo_segmentation):
     
 class phase_segmentation_cluster(phase_segmentation):
     def __init__(self,headpath,paramfile=True,seg_channel="", init_niblack_k=-0.45, maxima_niblack_k=-0.8, init_smooth_sigma=4, maxima_smooth_sigma=3, init_niblack_window_size=13, maxima_niblack_window_size=13, min_cell_size=100, deviation_from_median=0.3, max_perc_contrast=97, wrap_pad=0):
-        
-        if paramfile:
-            x = 0
-#             parampath = headpath + "/fluorescent_segmentation.par"
-#             with open(parampath, 'rb') as infile:
-#                 param_dict = pickle.load(infile)
-            
-#             scale_timepoints = param_dict["Scale Fluorescence?"]
-#             scaling_percentage = param_dict["Scaling Percentile:"]
-#             seg_channel = param_dict["Segmentation Channel:"]
-#             smooth_sigma = param_dict["Gaussian Kernel Sigma:"]
-#             bit_max = param_dict['8 Bit Maximum:']
-#             min_obj_size = param_dict["Minimum Object Size:"]
-#             cell_mask_method = param_dict["Cell Mask Thresholding Method:"]
-#             global_threshold = param_dict["Global Threshold:"]
-#             cell_otsu_scaling = param_dict["Cell Threshold Scaling:"]
-#             local_otsu_r = param_dict["Local Otsu Radius:"]
-#             edge_threshold_scaling = param_dict["Edge Threshold Scaling:"]
-#             threshold_step_perc = param_dict["Threshold Step Percent:"]
-#             threshold_perc_num_steps = param_dict["Number of Threshold Steps:"]
-#             convex_threshold = param_dict["Convexity Threshold:"]
         
         super(phase_segmentation_cluster, self).__init__(init_niblack_k=init_niblack_k, init_smooth_sigma=init_smooth_sigma, maxima_smooth_sigma=2, init_niblack_window_size=maxima_niblack_window_size, maxima_niblack_window_size=maxima_niblack_window_size, min_cell_size=min_cell_size, deviation_from_median=deviation_from_median, max_perc_contrast=max_perc_contrast, wrap_pad = wrap_pad)
 

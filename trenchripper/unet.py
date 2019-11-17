@@ -512,7 +512,7 @@ class UNet_Training_DataLoader:
         except:
             dask_cont.shutdown()
             raise
-            
+                        
 class GridSearch:
     def __init__(self,nndatapath,numepochs=50):
         self.nndatapath = nndatapath
@@ -592,8 +592,6 @@ class GridSearch:
             cmd = ["scancel","-p","gpu","--user=" + username]
             subprocess.Popen(cmd,shell=True,stdin=None,stdout=None,stderr=None,close_fds=True)
             
-
-
 
 class SegmentationDataset(Dataset):
     def __init__(self,filepath,weightchannel="",training=False):
