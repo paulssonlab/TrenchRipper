@@ -383,7 +383,7 @@ class kymograph_cluster:
             
         return repaired_trench_edges_y, orientations,drop_first_row,drop_last_row
 
-    def get_trench_ends(self, seed_image_idx, seed_trench_edges_y, y_drifts, start_above_list,end_above_list,orientations,drop_first_row,drop_last_row, trench_len_y, padding_y):        
+    def get_trench_ends(self, seed_image_idx, seed_trench_edges_y, y_drifts, start_above_list,end_above_list,orientations,drop_first_row,drop_last_row, padding_y, trench_len_y):        
         trench_edges_y_list = np.tile(seed_trench_edges_y, (y_drifts.shape[0], 1)) + y_drifts[:,None]
         trench_edges_y_list[:, 0] = np.maximum(trench_edges_y_list[:,0], 0)
         trench_edges_y_list[:, -1] = np.minimum(trench_edges_y_list[:,-1], int(self.metadata['height']))
