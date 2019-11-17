@@ -949,7 +949,7 @@ class kymograph_cluster:
             orientation_and_initend_future = dask_controller.futures["Trench Orientations and Initial Trench Ends: " + str(fov_idx)]
             in_bounds_future = dask_controller.futures["X In Bounds: " + str(fov_idx)]
             
-            future = dask_controller.daskclient.submit(self.crop_x,file_idx,drift_future,orientation_and_initend_future,in_bounds_future,self.padding_y,self.trench_len_y,retries=0)#,priority=priority)
+            future = dask_controller.daskclient.submit(self.crop_x,file_idx,orientation_and_initend_future,in_bounds_future,self.padding_y,self.trench_len_y,retries=0)#,priority=priority)
             dask_controller.futures["X Crop: " + str(file_idx)] = future
             
         ### get coords ###
