@@ -585,8 +585,25 @@ class phase_segmentation_cluster(phase_segmentation):
         self.phasedatapath = self.phasesegmentationpath + "/cell_data"
         self.metapath = headpath + "/metadata.hdf5"
         self.meta_handle = pandas_hdf5_handler(self.metapath)
+        self.metadf = None
         self.bit_max = None
         self.persisted_futures = None
+
+    def get_num_trenches_timepoints(self):
+        metadf = self.meta_handle.read_df("kymograph",read_metadata=True)
+        num_trenchid = len(metadf.index.unique("trenchid"))
+        num_time = len(metadf.index.unique("timepoints"))
+        return num_trenchid, num_time
+    
+    def view_kymograph(self, trench_idx, timepoint, channel):
+        if self.metadf is None:
+            self.metadf = self.meta_handle.read_df("kymograph",read_metadata=True)
+        img_entry = self.metadf.loc[trench_idx,timepoint]
+        file_idx = int(img_entry["File Index"])
+        trench_idx = int(img_entry["File Trench Index"])
+        with h5py.File(self.kymographpath + "/kymograph_" + str(file_idx) + ".hdf5", "r") as infile:
+            img_arr = infile[channel][trench_idx,timepoint,:,:]
+        plt.imshow(img_arr)
         
     def load_trench_array_list(self, path_form, file_idx, key, to_8bit):
         with h5py.File(path_form + str(file_idx) + ".hdf5","r") as input_file:
@@ -618,10 +635,8 @@ class phase_segmentation_cluster(phase_segmentation):
     def dask_segment(self,dask_controller, file_list=None, overwrite=True):
         writedir(self.phasesegmentationpath,overwrite=overwrite)
         dask_controller.futures = {}
-        
         if file_list is None:
-            kymodf = self.meta_handle.read_df("kymograph",read_metadata=True)
-            file_list = kymodf["File Index"].unique().tolist()
+            file_list = self.meta_handle.read_df("kymograph",read_metadata=True)["File Index"].unique().tolist()
         
         num_file_jobs = len(file_list)
         
@@ -640,8 +655,7 @@ class phase_segmentation_cluster(phase_segmentation):
         dask_controller.futures["Trench Loading"] = []
         
         if file_list is None:
-            kymodf = self.meta_handle.read_df("kymograph",read_metadata=True)
-            file_list = kymodf["File Index"].unique().tolist()
+            file_list = self.meta_handle.read_df("kymograph",read_metadata=True)["File Index"].unique().tolist()
         num_file_jobs = len(file_list)
         
         random_priorities = np.random.uniform(size=(num_file_jobs,2))

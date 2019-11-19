@@ -27,6 +27,7 @@ class mother_tracker():
         
         self.metapath = headpath + "/metadata.hdf5"
         self.meta_handle = pandas_hdf5_handler(self.metapath)
+        self.kymodf = self.meta_handle.read_df("kymograph",read_metadata=True)
     
 #     @profile
     def get_growth_props(self, file_idx, lower_threshold=0.35, upper_threshold=0.75):
@@ -40,7 +41,8 @@ class mother_tracker():
         file_growth_rate = []
         for trench in trenches:
             try:
-                mother_df = file_df.loc[trench,1]
+                mother_cell_index = file_df.loc[trench].index.unique("trench_cell_index")[0]
+                mother_df = file_df.loc[trench, mother_cell_index]
                 fov = mother_df["fov"].unique()[0]
                 trenchid = mother_df["trenchid"].unique()[0]
             except TypeError:
@@ -53,6 +55,8 @@ class mother_tracker():
                 file_dt.append(dt_data)
                 file_dt_smoothed.append(dt_smoothed_data)
                 file_growth_rate.append(growth_rate_data)
+        if len(file_dt) == 0:
+            return None, None, None
         file_dt = np.concatenate(file_dt, axis=0)
         file_dt_smoothed = np.concatenate(file_dt_smoothed, axis=0)
         file_growth_rate = np.concatenate(file_growth_rate, axis=0)
@@ -65,16 +69,16 @@ class mother_tracker():
 #     @profile
     def save_all_growth_props(self, file_list=None, lower_threshold=0.35, upper_threshold=0.75):
         if file_list is None:
-            kymodf = self.meta_handle.read_df("kymograph",read_metadata=True)
-            file_list = kymodf["File Index"].unique().tolist()
+            file_list = self.kymodf["File Index"].unique().tolist()
         all_dt = []
         all_dt_smoothed = []
         all_growth_rate = []
         for file_idx in file_list:
             file_dt, file_dt_smoothed, file_growth_rate = self.get_growth_props(file_idx, lower_threshold=lower_threshold, upper_threshold=upper_threshold)
-            all_dt.append(file_dt)
-            all_dt_smoothed.append(file_dt_smoothed)
-            all_growth_rate.append(file_growth_rate)
+            if file_dt is not None:
+                all_dt.append(file_dt)
+                all_dt_smoothed.append(file_dt_smoothed)
+                all_growth_rate.append(file_growth_rate)
         all_dt = np.concatenate(all_dt)
         all_dt_smoothed = np.concatenate(all_dt_smoothed)
         all_growth_rate = np.concatenate(all_growth_rate)
@@ -89,8 +93,8 @@ class mother_tracker():
             store.put("doubling_times_smoothed", all_dt_smoothed, data_columns=True)
             store.put("growth_rates", all_growth_rate, data_columns=True)
         
-    def get_doubling_times(self, times, peak_series):
-        peaks = detect_peaks(peak_series, mpd=5)
+    def get_doubling_times(self, times, peak_series, relative_threshold=1):
+        peaks = detect_peaks(peak_series, mpd=5, relative_threshold=relative_threshold)
         time_of_doubling = times[peaks]
         doubling_time_s = time_of_doubling[1:]-time_of_doubling[0:len(time_of_doubling)-1]
         return np.array([time_of_doubling[1:], doubling_time_s]).T
@@ -98,21 +102,28 @@ class mother_tracker():
     def get_mother_cell_growth_props(self, mother_data_frame, lower_threshold=0.35, upper_threshold=0.75):
         loading_fractions = np.array(mother_data_frame["trench_loadings"])
         cutoff_index = len(loading_fractions)
+        times_within_thresholds = (loading_fractions > lower_threshold)*(loading_fractions < upper_threshold)
+        times_outside_thresholds = ~times_within_thresholds
         if cutoff_index < 5:
             return None, None, None
-        for i in range(len(loading_fractions)-5):
-            if np.all(~((loading_fractions[i:i+5] > lower_threshold)*(loading_fractions[i:i+5] < upper_threshold))):
+        for i in range(len(loading_fractions)-4):
+            if np.all(times_outside_thresholds[i:i+5]):
                 cutoff_index = i
+                break
         if cutoff_index < 5:
             return None, None, None
         times = np.array(mother_data_frame["time_s"])[:cutoff_index]
         major_axis_length = np.array(mother_data_frame["major_axis_length"])[:cutoff_index]
         area = np.array(mother_data_frame["area"])[:cutoff_index]
+        repaired_data = self.repair_trench_loadings(np.array([major_axis_length, area]).T, times_outside_thresholds[:cutoff_index])
+        major_axis_length = repaired_data[:,0].flatten()
+        area = repaired_data[:,1].flatten()
+        
         mal_smoothed = signal.wiener(major_axis_length)
         area_smoothed = signal.wiener(area)
         
-        doubling_time = self.get_doubling_times(times, major_axis_length)
-        doubling_time_smoothed = self.get_doubling_times(times, mal_smoothed)
+        doubling_time = self.get_doubling_times(times, major_axis_length, relative_threshold=1.5)
+        doubling_time_smoothed = self.get_doubling_times(times, mal_smoothed, relative_threshold=1.5)
         
         instantaneous_growth_rate_length = np.gradient(major_axis_length, times)[1:]
         instantaneous_growth_rate_area = np.gradient(area, times)[1:]
@@ -124,3 +135,37 @@ class mother_tracker():
         growth_rate_data = np.concatenate([growth_rate_data, growth_rate_data[:,1:3]/major_axis_length[1:, None], growth_rate_data[:,3:5]/area[1:, None]], axis=1)
                                                
         return doubling_time, doubling_time_smoothed, growth_rate_data
+    
+    def repair_trench_loadings(self, data_raw, outside_thresholds):
+        data = np.copy(data_raw)
+        for i in range(data.shape[0]):
+            if outside_thresholds[i]:
+                if i==0:
+                    right_idx = 1
+                    while outside_thresholds[right_idx]:
+                        right_idx += 1
+                    for j in range(i, right_idx):
+                        data[j,:] = data[right_idx,:]
+                elif i == data.shape[0] - 1:
+                    left_idx = i - 1
+                    while outside_thresholds[left_idx]:
+                        left_idx -= 1
+                    for j in range(left_idx+1, i+1):
+                        data[j,:] = data[left_idx,:]
+                else:
+                    left_idx = i - 1
+                    right_idx = i + 1
+                    while outside_thresholds[right_idx] and right_idx < data.shape[0]-1:
+                        right_idx += 1
+                    while outside_thresholds[left_idx] and left_idx > 0:
+                        left_idx -= 1
+                    if outside_thresholds[right_idx]:
+                        for j in range(left_idx+1, right_idx+1):
+                            data[j,:] = data[left_idx,:]
+                    elif outside_thresholds[left_idx]:
+                        for j in range(left_idx, right_idx):
+                            data[j,:] = data[right_idx,:]
+                    else:
+                        for j in range(left_idx+1, right_idx):
+                            data[j,:] = data[left_idx,:] + (data[right_idx,:]-data[left_idx,:]) * (j-left_idx)/(right_idx-left_idx)
+        return data
