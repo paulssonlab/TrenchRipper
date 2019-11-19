@@ -588,7 +588,7 @@ class phase_segmentation_cluster(phase_segmentation):
         self.metadf = None
         self.bit_max = None
         self.persisted_futures = None
-
+    
     def get_num_trenches_timepoints(self):
         metadf = self.meta_handle.read_df("kymograph",read_metadata=True)
         num_trenchid = len(metadf.index.unique("trenchid"))
@@ -604,7 +604,11 @@ class phase_segmentation_cluster(phase_segmentation):
         with h5py.File(self.kymographpath + "/kymograph_" + str(file_idx) + ".hdf5", "r") as infile:
             img_arr = infile[channel][trench_idx,timepoint,:,:]
         plt.imshow(img_arr)
+<<<<<<< Updated upstream
         
+=======
+
+>>>>>>> Stashed changes
     def load_trench_array_list(self, path_form, file_idx, key, to_8bit):
         with h5py.File(path_form + str(file_idx) + ".hdf5","r") as input_file:
             if to_8bit:

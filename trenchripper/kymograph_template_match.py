@@ -108,56 +108,201 @@ class kymograph_cluster:
                                 "otsu_nbins":otsu_nbins,"otsu_scaling":otsu_scaling,"trench_present_thr":trench_present_thr}
 
     def find_seed_image(self, file_idx):
+        """ Get an image for each file to act as reference for drift measurements. This is to account for
+        the possibility that fiduciary markers are not available in the first timepoint or that it is out
+        of focus, even though the majority of images may still be fine. Bad timepoints are easier to filter
+        at the kymograph stage.
+
+        Inputs:
+            file_idx(int): index of hdf5 archive
+        Outputs:
+            seed_index(int): index of reference image within stack contained in the hdf5 archive
+        """
+        # Load hdf5 archive
         with h5py_cache.File(self.hdf5path+"/hdf5_"+str(file_idx)+".hdf5","r",chunk_cache_mem_size=self.metadata["chunk_cache_mem_size"]) as imported_hdf5_handle:
-            img_arr = imported_hdf5_handle[self.seg_channel][:] #t x y
+            # Open time stack of images
+            img_arr = imported_hdf5_handle[self.seg_channel][:] #t x y x x
+            # Find the seed index
             seed_index = find_seed_image(img_arr)
         return seed_index
+
+
+    def find_median_outliers(self, points, thresh = 3.5):
+        """ Detect outliers using median absolute deviation method
+
+        Inputs:
+            points (numpy.ndarray): set of x, y points (i.e. drifts of shape t x 2)
+        Outputs:
+            array (numpy.ndarray): boolean array (of length t) indicating which points are outliers
+        
+        References:
+        ----------
+            Boris Iglewicz and David Hoaglin (1993), "Volume 16: How to Detect and
+            Handle Outliers", The ASQC Basic References in Quality Control:
+            Statistical Techniques, Edward F. Mykytka, Ph.D., Editor. 
+        """
+        if len(points.shape) == 1:
+            points = points[:,None]
+        # Calculate median x and y drift
+        median = np.nanmedian(points, axis=0)
+        # Calclulate sum of squared difference of x and y to median
+        diff = np.sqrt(np.sum((points - median)**2, axis=-1))
+        # Take the median of these sequared deviations
+        med_abs_deviation = np.nanmedian(diff)
+        # Z score - if it's above a threshold it's an outlier. You can think of this as
+        # how much a particular point deviates from the median
+        modified_z_score = 0.6745 * diff / med_abs_deviation
+        return modified_z_score > thresh
+
+    def get_drifts(self, file_idx, seed_idx, max_poi_std=5):
+        """ Find drifts within each hdf5 archive using interest point matching, starting from the seed index
+
+        Inputs: 
+            file_idx (int): index of hdf5 archive
+            seed_idx (int): index of reference image within stack contained in the hdf5 archive
+            max_poi_std (float): maximum standard deviation between selected interest points used to register images.
+                        If the measured std is higher, interpolate between timepoints.
+        Outputs:
+            drifts (numpy.ndarray): t x 2 numpy.ndarray of x and y drift for the time stack
+        """
+        # Load hdf5 archive
+        with h5py_cache.File(self.hdf5path+"/hdf5_"+str(file_idx)+".hdf5","r",chunk_cache_mem_size=self.metadata["chunk_cache_mem_size"]) as imported_hdf5_handle:
+            img_arr = imported_hdf5_handle[self.seg_channel][:] #t x y
+        drifts = np.zeros((img_arr.shape[0], 2))
+        
+        for i in range(0, seed_idx):
+            # Get points of interest using ORB algorithm
+            points1, points2, std_distance = get_orb_pois(img_arr[seed_idx], img_arr[i])
+            
+            # If the standard deviation of distance between the interest point matches across timepoints
+            # is too high, instead label as nan for now and interpolate (the matches can't be trusted)
+            if std_distance > max_poi_std:
+                drifts[i,:] = [np.nan, np.nan]
+            else:
+                # Find the translation according to the interest point matches using RANSAC to account
+                # for outliers
+                drifts[i,:] = find_drift_poi(points1, points2)
+        for i in range(seed_idx+1, img_arr.shape[0]):
+            points1, points2, std_distance = get_orb_pois(img_arr[seed_idx], img_arr[i])
+            if std_distance > max_poi_std:
+                drifts[i,:] = [np.nan, np.nan]
+            else:
+                drifts[i,:] = find_drift_poi(points1, points2)
+        # Find outliers where drift is too large and also set to nan (similar to median filter but
+        # leave inliers alone)
+        outliers = self.find_median_outliers(drifts)
+        drifts[outliers,:] = [np.nan, np.nan]
+        # Interpolate for timepoints where drift could not be calculated
+        for i in range(img_arr.shape[0]):
+            if np.isnan(drifts[i,0]):
+                # Get correct drift from the right
+                if i==0:
+                    right_idx = 1
+                    while np.isnan(drifts[right_idx, 0]):
+                        right_idx += 1
+                    for j in range(i, right_idx):
+                        drifts[j,:] = drifts[right_idx,:]
+                # Get correct drift from the left
+                elif i == img_arr.shape[0] - 1:
+                    left_idx = i - 1
+                    while np.isnan(drifts[left_idx, 0]):
+                        left_idx -= 1
+                    for j in range(left_idx+1, i+1):
+                        drifts[j,:] = drifts[left_idx,:]
+                # Interpolate between left and right points
+                else:
+                    left_idx = i - 1
+                    right_idx = i + 1
+                    while np.isnan(drifts[right_idx, 0]) and right_idx < img_arr.shape[0]-1:
+                        right_idx += 1
+                    while np.isnan(drifts[left_idx, 0]) and left_idx > 0:
+                        left_idx -= 1
+                    if np.isnan(drifts[right_idx, 0]):
+                        for j in range(left_idx+1, right_idx+1):
+                            drifts[j,:] = drifts[left_idx,:]
+                    elif np.isnan(drifts[left_idx, 0]):
+                        for j in range(left_idx, right_idx):
+                            drifts[j,:] = drifts[right_idx,:]
+                    else:
+                        for j in range(left_idx+1, right_idx):
+                            drifts[j,:] = drifts[left_idx,:] + (drifts[right_idx,:]-drifts[left_idx,:]) * (j-left_idx)/(right_idx-left_idx)
+        return drifts
+
     
     def find_seed_image_and_template(self, file_idx):
+        """ Get an image for each file to act as reference for drift measurements. This is to account for
+        the possibility that fiduciary markers are not available in the first timepoint or that it is out
+        of focus, even though the majority of images may still be fine. Bad timepoints are easier to filter
+        at the kymograph stage. Use points of interest to determine a patch of the image to use for template
+        matching.
+
+        Inputs:
+            file_idx (int): index of hdf5 archive
+        Outputs:
+            seed_index (int): index of reference image within stack contained in the hdf5 archive
+            template (numpy.ndarray): 2D image patch to use as template
+            top_left (tuple): x, y coordinates (int, int) of top-left corner of template, used to calculate drift
+                    later
+        """
         with h5py_cache.File(self.hdf5path+"/hdf5_"+str(file_idx)+".hdf5","r",chunk_cache_mem_size=self.metadata["chunk_cache_mem_size"]) as imported_hdf5_handle:
             img_arr = imported_hdf5_handle[self.seg_channel][:] #t x y
             seed_index = find_seed_image(img_arr)
             template, top_left = find_template(img_arr[seed_index], img_arr[seed_index+1])
         return seed_index, template, top_left
-
-    def find_median_outliers(self, points, thresh = 3.5):
-        if len(points.shape) == 1:
-            points = points[:,None]
-        median = np.nanmedian(points, axis=0)
-        diff = np.sqrt(np.sum((points - median)**2, axis=-1))
-        med_abs_deviation = np.nanmedian(diff)
-        modified_z_score = 0.6745 * diff / med_abs_deviation
-        return modified_z_score > thresh
     
     def get_drifts_template(self, file_idx, seed_image_and_template_future, max_sqdiff=0.1):
+        """ Detect drifts using MSD template matching
+
+        Inputs:
+            file_idx (int): index of hdf5 archive
+            seed_image_and_template_future (tuple): tuple of (seed_index, template, top_left) (to be
+            compatible with map-reduce framework in Dask)
+            seed_index (int): index of reference image within stack contained in the hdf5 archive
+            template (numpy.ndarray): 2D image patch to use as template
+            top_left (tuple): x, y coordinates (int, int) of top-left corner of template
+            max_sqdiff (double, <=1): normalized square difference maximum above which to throw out the
+                        template match and instead interpolate
+        Outputs:
+            seed_index - index of reference image within stack contained in the hdf5 archive
+        """
+        # Unpack tuple
         seed_idx, template, top_left = seed_image_and_template_future
+        # Open HDF5 archive
         with h5py_cache.File(self.hdf5path+"/hdf5_"+str(file_idx)+".hdf5","r",chunk_cache_mem_size=self.metadata["chunk_cache_mem_size"]) as imported_hdf5_handle:
             img_arr = imported_hdf5_handle[self.seg_channel][:] #t x y
         drifts = np.zeros((img_arr.shape[0], 2))
+        # Template match
         for i in range(0, seed_idx):
             drifts[i,:], min_sqdiff = find_drift_template(template, top_left, img_arr[i])
+            # Throw out bad matches
             if min_sqdiff > max_sqdiff:
                 drifts[i,:] = [np.nan, np.nan]
         for i in range(seed_idx+1, img_arr.shape[0]):
             drifts[i,:], min_sqdiff = find_drift_template(template, top_left, img_arr[i])
             if min_sqdiff > max_sqdiff:
                 drifts[i,:] = [np.nan, np.nan]
+        # Find outliers where drift is too large and also set to nan (similar to median filter but
+        # leave inliers alone)        
         outliers = self.find_median_outliers(drifts)
         drifts[outliers,:] = [np.nan, np.nan]
+        # Interpolate for timepoints where drift could not be calculated
         for i in range(img_arr.shape[0]):
             if np.isnan(drifts[i,0]):
+                # Get correct drift from left
                 if i==0:
                     right_idx = 1
                     while np.isnan(drifts[right_idx, 0]):
                         right_idx += 1
                     for j in range(i, right_idx):
                         drifts[j,:] = drifts[right_idx,:]
+                # Get correct drift from right
                 elif i == img_arr.shape[0] - 1:
                     left_idx = i - 1
                     while np.isnan(drifts[left_idx, 0]):
                         left_idx -= 1
                     for j in range(left_idx+1, i+1):
                         drifts[j,:] = drifts[left_idx,:]
+                # Interpolate between left and right
                 else:
                     left_idx = i - 1
                     right_idx = i + 1
@@ -176,63 +321,25 @@ class kymograph_cluster:
                             drifts[j,:] = drifts[left_idx,:] + (drifts[right_idx,:]-drifts[left_idx,:]) * (j-left_idx)/(right_idx-left_idx)
         return drifts
 
-    def get_drifts(self, file_idx, seed_idx, max_poi_std=5):
-        with h5py_cache.File(self.hdf5path+"/hdf5_"+str(file_idx)+".hdf5","r",chunk_cache_mem_size=self.metadata["chunk_cache_mem_size"]) as imported_hdf5_handle:
-            img_arr = imported_hdf5_handle[self.seg_channel][:] #t x y
-        drifts = np.zeros((img_arr.shape[0], 2))
-        for i in range(0, seed_idx):
-            points1, points2, std_distance = get_orb_pois(img_arr[seed_idx], img_arr[i])
-            if std_distance > max_poi_std:
-                drifts[i,:] = [np.nan, np.nan]
-            else:
-                drifts[i,:] = find_drift_poi(points1, points2)
-        for i in range(seed_idx+1, img_arr.shape[0]):
-            points1, points2, std_distance = get_orb_pois(img_arr[seed_idx], img_arr[i])
-            if std_distance > max_poi_std:
-                drifts[i,:] = [np.nan, np.nan]
-            else:
-                drifts[i,:] = find_drift_poi(points1, points2)
-        outliers = self.find_median_outliers(drifts)
-        drifts[outliers,:] = [np.nan, np.nan]
-        for i in range(img_arr.shape[0]):
-            if np.isnan(drifts[i,0]):
-                if i==0:
-                    right_idx = 1
-                    while np.isnan(drifts[right_idx, 0]):
-                        right_idx += 1
-                    for j in range(i, right_idx):
-                        drifts[j,:] = drifts[right_idx,:]
-                elif i == img_arr.shape[0] - 1:
-                    left_idx = i - 1
-                    while np.isnan(drifts[left_idx, 0]):
-                        left_idx -= 1
-                    for j in range(left_idx+1, i+1):
-                        drifts[j,:] = drifts[left_idx,:]
-                else:
-                    left_idx = i - 1
-                    right_idx = i + 1
-                    while np.isnan(drifts[right_idx, 0]) and right_idx < img_arr.shape[0]-1:
-                        right_idx += 1
-                    while np.isnan(drifts[left_idx, 0]) and left_idx > 0:
-                        left_idx -= 1
-                    if np.isnan(drifts[right_idx, 0]):
-                        for j in range(left_idx+1, right_idx+1):
-                            drifts[j,:] = drifts[left_idx,:]
-                    elif np.isnan(drifts[left_idx, 0]):
-                        for j in range(left_idx, right_idx):
-                            drifts[j,:] = drifts[right_idx,:]
-                    else:
-                        for j in range(left_idx+1, right_idx):
-                            drifts[j,:] = drifts[left_idx,:] + (drifts[right_idx,:]-drifts[left_idx,:]) * (j-left_idx)/(right_idx-left_idx)
-        return drifts
-    
     def link_drifts(self, file_indices, seed_images, within_file_drifts):
+        """ Put all drifts of a field of view with respect to first file by linking seed drifts for each hdf5 archive
+        
+        Inputs:
+            file_indices (list): hdf5 archive indices (int) that belong to a field of view
+            seed_images (list): seed indices (int) for each hdf5 archive
+            within_file_difts (list): t x 2 numpy arrays containing the drifts with respect to
+                                each seed image 
+        """
         with h5py_cache.File(self.hdf5path+"/hdf5_"+str(file_indices[0])+".hdf5","r",chunk_cache_mem_size=self.metadata["chunk_cache_mem_size"]) as imported_hdf5_handle:
             first_seed_img = imported_hdf5_handle[self.seg_channel][seed_images[0],:,:] #t x y
+        # Start with first file's drift w.r.t its seed image
         drifts = [within_file_drifts[0]]
         for k, file_idx in enumerate(file_indices[1:]):
             with h5py_cache.File(self.hdf5path+"/hdf5_"+str(file_idx)+".hdf5","r",chunk_cache_mem_size=self.metadata["chunk_cache_mem_size"]) as imported_hdf5_handle:
+                # Find the seed image in the other file
                 comp_seed_img = imported_hdf5_handle[self.seg_channel][seed_images[k],:,:] #t x y
+                # Interest point match the seed images (assume well behaved from checking previously so no need
+                # for error correction)
                 points1, points2, _ = get_orb_pois(first_seed_img, comp_seed_img)
                 file_to_file_drift = find_drift_poi(points1, points2).reshape(1, 2)
                 drifts.append(within_file_drifts[k+1] + file_to_file_drift)
@@ -244,11 +351,11 @@ class kymograph_cluster:
         
         Args:
             array_list (list): List containing a single array to be smoothed.
-            smoothing_kernel (tuple): A tuple of ints specifying the kernel under which
+            smoothing_kernel (int) : The size of the  kernel under which
             the median will be taken.
         
         Returns:
-            array: Median-filtered 2 dimensional signal.
+            med_filter (numpy.ndarray): Median-filtered 1D dimensional signal (y,).
         """
         kernel = smoothing_kernel #1,9
         kernel_pad = kernel//2 + 1 #1,5
@@ -267,11 +374,12 @@ class kymograph_cluster:
         Args:
             imported_hdf5_handle (h5py.File): Hdf5 file handle corresponding to the input hdf5 dataset
             "data" of shape (channel,y,x,t).
+            seed_image_idx (int): index of seed image on which to perform segmentation
             y_percentile (int): Percentile to apply along the x-axis.
-            smoothing_kernel_y (tuple): Kernel to use for median filtering.
+            smoothing_kernel_y (int): Kernel to use for median filtering.
         
         Returns:
-            y_percentiles_smoothed: a smoothed percentile array of shape (y,).
+            y_percentiles_smoothed (numpy.ndarray): a smoothed percentile array of shape (y,).
         """
         with h5py_cache.File(self.hdf5path+"/hdf5_"+str(file_idx)+".hdf5","r",chunk_cache_mem_size=self.metadata["chunk_cache_mem_size"]) as imported_hdf5_handle:
             seed_img = imported_hdf5_handle[self.seg_channel][seed_image_idx]
@@ -294,7 +402,7 @@ class kymograph_cluster:
             triangle_scaling (float): Factor by which to scale the threshold.
         
         Returns:
-            array: Boolean mask produced by the threshold.
+            triangle_mask (numpy.ndarray): Boolean mask produced by the threshold.
         """
         threshold = sk.filters.threshold_triangle(y_percentiles_smoothed,nbins=triangle_nbins)*triangle_scaling
         threshold = min(threshold, triangle_max_threshold)
@@ -311,7 +419,9 @@ class kymograph_cluster:
             y_min_edge_dist (int): Minimum row length necessary for detection.
         
         Returns:
-            list: List containing arrays of edges for each timepoint, filtered for rows that are too small.
+            edges (numpy.ndarray): list of y-edges of trenches (each pair = 1 trench)
+            start_above (bool): Whether the top edge of the image is inside a trench
+            end_above (bool): Whether the bottom edge of the image is inside a trench
         """
 
         edge_mask = (mask[1:] != mask[:-1])
@@ -324,13 +434,15 @@ class kymograph_cluster:
         """Detects edges in the shape (y,) smoothed percentile array for each seed image.
         
         Args:
-            y_percentiles_smoothed (array): A shape (y,) smoothed percentile array.
+            y_percentiles_smoothed (array): A shape (y,) smoothed percentile array for the seed image.
             triangle_nbins (int): Number of bins to be used to construct the thresholding histogram.
             triangle_scaling (float): Factor by which to scale the threshold.
             y_min_edge_dist (int): Minimum row length necessary for detection.
         
         Returns:
-            list: List containing arrays of edges for each timepoint, filtered for rows that are too small.
+            edges (nu,[y/mdarray]): list of y-edges of the trench (each pair = 1 trench)
+            start_above (bool): Whether the top edge of the image is inside a trench
+            end_above (bool): Whether the bottom edge of the image is inside a trench
         """
         
         trench_mask_y = self.triangle_threshold(y_percentiles_smoothed,triangle_nbins,triangle_scaling,triangle_max_threshold,triangle_min_threshold)
@@ -338,6 +450,16 @@ class kymograph_cluster:
         return edges,start_above,end_above
     
     def repair_out_of_frame(self,trench_edges_y,start_above,end_above):
+        """ Replace missing trench edges with the edges of the image
+        
+        Args:
+            trench_edges_y (numpy.ndarray): list of y-edges of the trench (each pair = 1 trench)
+            start_above (bool): Whether the top edge of the image is inside a trench
+            end_above (bool): Whether the bottom edge of the image is inside a trench
+        Returns:
+            trench_edges_y (numpy.ndarray): list of repaired y-edges of the trench (each pair = 1 trench)
+
+        """
         if start_above:
             trench_edges_y =  np.array([0] + trench_edges_y.tolist())
         if end_above:
@@ -410,18 +532,37 @@ class kymograph_cluster:
             
         return repaired_trench_edges_y, orientations,drop_first_row,drop_last_row
 
-    def get_trench_ends(self, seed_image_idx, seed_trench_edges_y, y_drifts, start_above_list,end_above_list,orientations,drop_first_row,drop_last_row, padding_y, trench_len_y):        
+    def get_trench_ends(self, seed_image_idx, seed_trench_edges_y, y_drifts, orientations,drop_first_row,drop_last_row, padding_y, trench_len_y):        
+        """ Get trench ends (i.e. y-boundaries) for all times in a field of view based on seed image segmentation and calculated drift
+        
+        Args:
+            seed_image_idx (int): Index of seed image in the full image stack for the field of view
+            seed_trench_edges_y (numpy.ndarrray, int): List of segmented edges in seed mage
+            orientations (numpy.ndarray, int): List of orientations for each trench row in a field of view
+            drop_first_row (bool): Whether to ignore the first row of trenches
+            drop_last_row (bool): Whether to ignore the second row of trenches
+            padding_y (int): Extra space to add beyond the segmentation
+            trench_len_y (int): Length to cut from the dead end of the trench
+
+        Returns:
+            valid_y_ends (numpy.ndarray): List of valid dead ends of the trenches for each row
+            valid_orientations (numpy.ndarray): Corresponding orientations
+        """
+        # Get trench edges at each timepoint according to the trench edges of the seed index and the drifts
         trench_edges_y_list = np.tile(seed_trench_edges_y, (y_drifts.shape[0], 1)) + y_drifts[:,None]
+        # Cut edges that are outside the image
         trench_edges_y_list[:, 0] = np.maximum(trench_edges_y_list[:,0], 0)
         trench_edges_y_list[:, -1] = np.minimum(trench_edges_y_list[:,-1], int(self.metadata['height']))
 
+        # Remove any trenches that should be dropped
         if trench_edges_y_list.shape[1]//2 > len(orientations) and drop_first_row:
             trench_edges_y_list = trench_edges_y_list[:,2:]
         if trench_edges_y_list.shape[1]//2 > len(orientations) and drop_last_row:
             trench_edges_y_list = trench_edges_y_list[:,:-2]
 
         y_ends_list = []
-        
+
+        # Pair orientations and y ends of trenches for each timepoint        
         for t in range(trench_edges_y_list.shape[0]):
             grouped_edges = trench_edges_y_list[t,:].reshape(-1,2) # or,2
             y_ends = []
@@ -436,7 +577,8 @@ class kymograph_cluster:
         seed_y_ends = y_ends_list[seed_image_idx]
         max_y_dim = self.metadata['height']
         max_drift,min_drift = np.max(y_drifts),np.min(y_drifts)
-        
+
+        # Check that the trench does not drift outside the image at any timepoint         
         for j,orientation in enumerate(orientations):
             y_end = seed_y_ends[j]
             if orientation == 0:
@@ -462,11 +604,29 @@ class kymograph_cluster:
         return valid_y_ends,valid_orientations
     
     def get_ends_and_orientations(self,seed_image_idx,drift_future,edges_future,expected_num_rows,top_orientation,orientation_on_fail,y_min_edge_dist,padding_y,trench_len_y):
+        """ Get orientations and dead ends of trenches that have not drifted out of the image at any timepoint
+
+        Args:
+            seed_image_idx (int): index of seed image
+            drift_future (numpy.ndarray): t x 2 array of x and y drifts
+            edges_future (tuple): tuple of (seed_trench_edges, seed_start_above, seed_end_above)
+            seed_trench_edges (numpy.ndarray): list of detected trench edges for the seed image
+            seed_start_above (bool): Whether the top edge of the image is within a trench
+            seed_end_above (bool): Whether the bottom edge of the image is within a trench
+            top_orientation (int): Whether the first trench in an image is pointing up or down
+            orientation_on_fail (int): ???
+            y_min_edge_dist (int): The minimum distance between edges to consider a signal as a possible trench
+            trench_len_y (int): Length of trench to cut
+        Returns:
+
+        """
+        # Unpack edge future
         seed_trench_edges, seed_start_above, seed_end_above = edges_future
+        # Unpack y from drift future
         y_drift = drift_future[:,1]
         
         repaired_trench_edges_y, orientations,drop_first_row,drop_last_row = self.get_manual_orientations(seed_trench_edges,seed_start_above,seed_end_above,expected_num_rows,top_orientation,orientation_on_fail,y_min_edge_dist)
-        valid_y_ends, valid_orientations = self.get_trench_ends(seed_image_idx, repaired_trench_edges_y, y_drift, seed_start_above, seed_end_above,orientations,drop_first_row,drop_last_row,padding_y, trench_len_y)
+        valid_y_ends, valid_orientations = self.get_trench_ends(seed_image_idx, repaired_trench_edges_y, y_drift, orientations,drop_first_row,drop_last_row,padding_y, trench_len_y)
         
         return valid_orientations,valid_y_ends
     
@@ -474,16 +634,8 @@ class kymograph_cluster:
         """Performs cropping of the images in the y-dimension.
         
         Args:
-            i (int): Specifies the current fov index.
-            trench_edges_y_list (list): List containing, for each fov entry, a list of time-sorted edge arrays.
-            row_num_list (list): List containing The number of trench rows detected in each fov.
-            imported_array_list (list): A list containing numpy arrays containing the hdf5 file image
-            data of shape (channel,y,x,t).
-            padding_y (int): Padding to be used when cropping in the y-dimension.
-            trench_len_y (int): Length from the end of the tenches to be used when cropping in the 
-            y-dimension.
-            top_orientation (int, optional): The orientation of the top-most row where 0 corresponds to a trench with
-            a downward-oriented trench opening and 1 corresponds to a trench with an upward-oriented trench opening.
+            file_idx (int):
+            orientation_and_initend_future (tuple): tuple of valid_orientations, valid_y_ends
         Returns:
             array: A y-cropped array of shape (rows,channels,x,y,t).
         """
