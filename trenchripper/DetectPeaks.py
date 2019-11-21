@@ -127,6 +127,7 @@ def detect_peaks(x, mph=None, mpd=1, threshold=0, relative_threshold=1, edge='fa
         dx = np.max(np.vstack([x[ind]-x[ind-1], x[ind]-x[ind+1]]), axis=0)
         ind = np.delete(ind, np.where(dx < threshold)[0])
     
+    # Remove peaks that are not greater than a multiple of their nearest neighbours
     if ind.size and relative_threshold > 1:
         dx = np.max(np.vstack([x[ind]/x[ind-3], x[ind]/x[ind+3]]), axis=0)
         ind = np.delete(ind, np.where(dx < relative_threshold)[0])

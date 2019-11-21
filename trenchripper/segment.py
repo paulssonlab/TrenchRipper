@@ -21,6 +21,23 @@ from pandas import HDFStore
 from matplotlib import pyplot as plt
 
 class phase_segmentation:
+    """ Segmentation algorithm for high mag phase images
+
+    Attributes:
+        init_niblack_k (float): k parameter for niblack thresholding of cells
+        maxima_niblack_k (float): k parameter for more rigorous thresholding to determine
+                        watershed seeds
+        init_smooth_sigma (float): smoothing value for cell segmentation
+        maxima_smooth_sigma (float): smoothing value for seed segmentation
+        maxima_niblack_window_size (int): window size for niblack thresholding of seeds
+        init_niblack_window_size (int): window size for niblack thresholding of cells
+        min_cell_size (int): throw out mask regions smaller than this size
+        deviation_from_median (float): Relative deviation from median cell size for outlier
+                                detection
+        max_perc_contrast (float):
+        wrap_pad (int):
+
+    """
     def __init__(self, init_niblack_k=-0.5, maxima_niblack_k=-0.6, init_smooth_sigma=3, maxima_smooth_sigma=2, init_niblack_window_size=13, maxima_niblack_window_size=13, min_cell_size=100, deviation_from_median=0.3, max_perc_contrast=97, wrap_pad = 0):
         
         self.init_niblack_k = -init_niblack_k
@@ -35,6 +52,13 @@ class phase_segmentation:
         self.wrap_pad = 0
         
     def remove_large_objects(self, conn_comp, max_size=4000):
+        """ Remove segmented regions that are too large
+
+        Args:
+            conn_comp(numpy.ndarray, int): Segmented connected components where each
+                                        component is numbered
+            max_size(int): Throw out regions where area is greater than this
+        """
         out = np.copy(conn_comp)
         component_sizes = np.bincount(conn_comp.ravel())
         too_big = component_sizes > max_size
@@ -49,7 +73,6 @@ class phase_segmentation:
         else:
             max_val = max(img_max,bit_max)
         min_val = np.min(img_arr)
-#         min_val = np.min(img_arr)
         norm_array = (img_arr-min_val)/(max_val-min_val)
         norm_byte_array = sk.img_as_ubyte(norm_array)
         return norm_byte_array
@@ -604,11 +627,7 @@ class phase_segmentation_cluster(phase_segmentation):
         with h5py.File(self.kymographpath + "/kymograph_" + str(file_idx) + ".hdf5", "r") as infile:
             img_arr = infile[channel][trench_idx,timepoint,:,:]
         plt.imshow(img_arr)
-<<<<<<< Updated upstream
-        
-=======
 
->>>>>>> Stashed changes
     def load_trench_array_list(self, path_form, file_idx, key, to_8bit):
         with h5py.File(path_form + str(file_idx) + ".hdf5","r") as input_file:
             if to_8bit:
