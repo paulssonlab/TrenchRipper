@@ -9,7 +9,7 @@ __version__ = "1.0.4"
 __license__ = "MIT"
 
 
-def detect_peaks(x, mph=None, mpd=1, threshold=0, edge='falling', offset_threshold = 0,
+def detect_peaks(x, mph=None, mpd=1, threshold=0, relative_threshold=1, edge='falling', offset_threshold = 0,
                  kpsh=False, valley=False, show=False, ax=None):
 
     """Detect peaks in data based on their amplitude and other features.
@@ -26,6 +26,8 @@ def detect_peaks(x, mph=None, mpd=1, threshold=0, edge='falling', offset_thresho
     threshold : positive number, optional (default = 0)
         detect peaks (valleys) that are greater (smaller) than `threshold`
         in relation to their immediate neighbors.
+    relative_threshold: positive number, optional (default = 1)
+        detect peaks that are multiplicative of their neighbours
     edge : {None, 'rising', 'falling', 'both'}, optional (default = 'rising')
         for a flat peak, keep only the rising edge ('rising'), only the
         falling edge ('falling'), both edges ('both'), or don't detect a
@@ -114,8 +116,8 @@ def detect_peaks(x, mph=None, mpd=1, threshold=0, edge='falling', offset_thresho
 
     # first and last **two** values of x cannot be peaks
     if ind.size:
-        ind = ind[ind > 1]
-        ind = ind[ind < x.size - 2]
+        ind = ind[ind > 3]
+        ind = ind[ind < x.size - 3]
 
     # remove peaks < minimum peak height
     if ind.size and mph is not None:
@@ -124,6 +126,11 @@ def detect_peaks(x, mph=None, mpd=1, threshold=0, edge='falling', offset_thresho
     if ind.size and threshold > 0:
         dx = np.max(np.vstack([x[ind]-x[ind-1], x[ind]-x[ind+1]]), axis=0)
         ind = np.delete(ind, np.where(dx < threshold)[0])
+    
+    # Remove peaks that are not greater than a multiple of their nearest neighbours
+    if ind.size and relative_threshold > 1:
+        dx = np.max(np.vstack([x[ind]/x[ind-3], x[ind]/x[ind+3]]), axis=0)
+        ind = np.delete(ind, np.where(dx < relative_threshold)[0])
 
     if ind.size and offset_threshold != 0:
         dx = x[ind+1] - x[ind-1]
