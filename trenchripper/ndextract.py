@@ -103,6 +103,7 @@ class hdf5_fov_extractor:
                     for i,channel in enumerate(self.metadata["channels"]):
                         hdf5_dataset = h5pyfile.create_dataset(str(channel),\
                         (num_entries,y_dim,x_dim), chunks=self.chunk_shape, dtype='uint16')
+                        # If Elements crashed nd2reader does not index into the file correctly, this is a hard fix
                         if self.metadata["failed_file"]:
                             for j in range(len(timepoint_list)):
                                 frame = timepoint_list[j]
@@ -146,6 +147,16 @@ class hdf5_fov_extractor:
         self.meta_handle.write_df("global",outdf,metadata=self.metadata)
 
 class tiff_to_hdf5_extractor:
+    """ Utility to convert individual tiff files to hdf5 archives
+
+    Attributes:
+        headpath (str): base directory for data analysis
+        tiffpath (str): directory where tiff files are located
+        metapath (str): metadata path
+        hdf5path (str): where to store hdf5 data
+        tpts_per_file (int): number of timepoints to put in each hdf5 file
+        format_string (str): format of filenames from which to extract metadata (using parse library)
+    """
     def __init__(self, headpath, tiffpath, format_string, tpts_per_file=100):
         self.tiffpath = tiffpath
         self.headpath = headpath
@@ -156,11 +167,21 @@ class tiff_to_hdf5_extractor:
         
     
     def get_notes(self,organism,microscope,notes):
+        """ Get note metadata
+
+        Inputs:
+            organism (str): organism
+            microscope (str): microscope
+            notes (str): notes
+        """
         self.organism = organism
         self.microscope = microscope
         self.notes = notes
         
     def inter_get_notes(self):
+        """ Get notes interactively using ipywidgets
+
+        """
         selection = ipyw.interactive(self.get_notes, {"manual":True}, organism=ipyw.Textarea(value='',\
                 placeholder='Organism imaged in this experiment.',description='Organism:',disabled=False),\
                 microscope=ipyw.Textarea(value='',placeholder='Microscope used in this experiment.',\
@@ -169,16 +190,27 @@ class tiff_to_hdf5_extractor:
         display(selection)
     
     def assignidx(self,metadf):
+        """ Get indices for each image in each file (for metadata)
+
+        Args:
+            metadf (pandas.DataFrame): metadata without file indices
+        Returns:
+            outdf (pandas.DataFrame): metadata with file indices
+        """
         outdf = copy.deepcopy(metadf)
+        # get number of each dimension of the data
         numchannels = len(pd.unique(metadf["channel"]))
         numfovs = len(metadf.index.get_level_values("fov").unique())
         timepoints_per_fov = len(metadf.index.get_level_values("timepoints").unique())
+        # Calculate number of files required for the number of timepoints
         files_per_fov = (timepoints_per_fov//self.tpts_per_file) + 1
         remainder = timepoints_per_fov%self.tpts_per_file
         
+        # Assign file indices to each individual image in a field of view
         fov_file_idx = np.repeat(list(range(files_per_fov)), self.tpts_per_file*numchannels)[:-(self.tpts_per_file-remainder)*numchannels]
         file_idx = np.concatenate([fov_file_idx+(fov_idx*files_per_fov) for fov_idx in range(numfovs)])
         
+        # Assign image indices within a file
         fov_img_idx = np.repeat(np.repeat(np.array(list(range(self.tpts_per_file))), numchannels)[np.newaxis,:],files_per_fov,axis=0)
         fov_img_idx = fov_img_idx.flatten()[:-(self.tpts_per_file-remainder)*numchannels]
         img_idx = np.concatenate([fov_img_idx for fov_idx in range(numfovs)])
@@ -187,6 +219,16 @@ class tiff_to_hdf5_extractor:
         return outdf
 
     def writemetadata(self, parser, tiff_files):
+        """ Write metadata
+
+        Args:
+            parser (parser): compiled parser to find metadata
+            tiff_files (list, str): list of full paths to each tiff file
+        Returns:
+            channel_paths_by_file_index (list, tuple): Group files that represent multiple channels
+                                                    for a single field of view
+
+        """
         fov_metadata = {}
         exp_metadata = {}
         assignment_metadata = {}
@@ -194,9 +236,12 @@ class tiff_to_hdf5_extractor:
         first_successful_file= True
         for f in tiff_files:
             match = parser.search(f)
+            # ignore any files that don't match the regex
             if match is not None:
                 if first_successful_file:
+                    # Build metadata
                     first_img = imread(f)
+                    # get dimensions by loading file
                     exp_metadata["height"] = first_img.shape[0]
                     exp_metadata["width"] = first_img.shape[1]
                     exp_metadata["Organism"] = self.organism
@@ -207,25 +252,27 @@ class tiff_to_hdf5_extractor:
                     chunk_bytes = (2*np.multiply.accumulate(np.array(self.chunk_shape))[-1])
                     self.chunk_cache_mem_size = 2*chunk_bytes
                     exp_metadata["chunk_shape"],exp_metadata["chunk_cache_mem_size"] = (self.chunk_shape,self.chunk_cache_mem_size)
-
+                    # get metadata from the file name
                     fov_metadata = dict([(key, [value]) for key, value in match.named.items()])
                     fov_metadata["Image Path"] = [f]
                     first_successful_file = False
                 else:
+                    # Add to dictionary
                     fov_frame_dict = match.named
                     for key, value in fov_frame_dict.items():
                         fov_metadata[key].append(value)
                     fov_metadata["Image Path"].append(f)
         if "lane" not in fov_metadata:
             fov_metadata["lane"] = [1]*len(fov_metadata["Image Path"])
-            
+        
+        # Convert dictionary to dataframe
         fov_metadata = pd.DataFrame(fov_metadata)
         
-        exp_metadata["frames"] = None
-        exp_metadata["num_frames"] = len(exp_metadata["frames"])
+        exp_metadata["num_frames"] = len(pd.unique(fov_metadata["timepoints"]))
         exp_metadata["channels"] = list(pd.unique(fov_metadata["channel"]))
         
         fov_metadata = fov_metadata.set_index(["lane", "fov"]).sort_values("timepoints").sort_index()
+        # Turn lane and field of view to a single index by mapping pairs of indices to single indices
         old_labels = [list(frozen_array) for frozen_array in fov_metadata.index.unique().labels]
         old_labels = list(zip(old_labels[0], old_labels[1]))
         label_mapping = {}
@@ -241,29 +288,48 @@ class tiff_to_hdf5_extractor:
         exp_metadata["fields_of_view"] = sorted(list(pd.unique(fov_metadata["fov"])))
         exp_metadata["num_fovs"] = len(exp_metadata["fields_of_view"])
         
-        self.meta_handle = pandas_hdf5_handler(self.metapath)
-        
+
+        # Assign file indices
         assignment_metadata = self.assignidx(fov_metadata.set_index(["fov", "timepoints"]))
+        
+        # Get the the image paths corresponding to channel and timepoint for each file index
         channel_paths_by_file_index = assignment_metadata.reset_index()[["File Index", "channel", "Image Path"]].set_index("File Index")
         channel_paths_by_file_index = [(file_index, list(channel_paths_by_file_index.loc[file_index]["channel"]), list(channel_paths_by_file_index.loc[file_index]["Image Path"])) for file_index in channel_paths_by_file_index.index.unique("File Index")]
+        # Remove entries for extra channels for the same field of view and time
         assignment_metadata = assignment_metadata.drop_duplicates(subset=["File Index", "Image Index"])
         assignment_metadata = assignment_metadata[["lane", "File Index", "Image Index"]]
-
+        
+        # save data
+        self.meta_handle = pandas_hdf5_handler(self.metapath)
         self.meta_handle.write_df("global",assignment_metadata,metadata=exp_metadata)
         return channel_paths_by_file_index
 
     def extract(self, dask_controller):
+        """ Convert tiff files to hdf5 in parallel
+
+        Args:
+            dask_controller (trenchripper.daskcontroller): helper object for parallelization
+        Returns:
+            None
+
+        """
+
+        # Make/overwrite directory
         writedir(self.hdf5path,overwrite=True)
+        # Create parser
         parser = compile(self.format_string)
+        # Search specified directory recursively for tiff files
         tiff_files = []
         for root, _, files in os.walk(self.tiffpath):
             tiff_files.extend([os.path.join(root, f) for f in files if ".tif" in os.path.splitext(f)[1]])
         
+         
         channel_paths_by_file_index = self.writemetadata(parser, tiff_files)
         dask_controller.futures = {}
         metadf = self.meta_handle.read_df("global",read_metadata=True)
         self.metadata = metadf.metadata
 
+        # Load all tiff files for an hdf5
         def writehdf5(fidx_channels_paths):
             y_dim = self.metadata['height']
             x_dim = self.metadata['width']
@@ -376,6 +442,7 @@ class nd_metadata_handler:
         return output
     
     def get_metadata(self, manual_num_frames=None, manual_num_fovs=None):
+        # Manual numbers are for broken .nd2 files (from when Elements crashes)
         nd2file = ND2Reader(self.nd2filename)
         exp_metadata = copy.copy(nd2file.metadata)
         wanted_keys = ['height', 'width', 'date', 'fields_of_view', 'frames', 'z_levels', 'total_images_per_channel', 'channels', 'pixel_microns', 'num_frames', 'experiment']
