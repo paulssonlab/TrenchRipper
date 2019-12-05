@@ -289,10 +289,9 @@ class tiff_to_hdf5_extractor:
             old_label = (old_labels[i, 0], old_labels[i, 1])
             new_labels[i] = label_mapping[old_label]
         fov_metadata = fov_metadata.reset_index()
-        fov_metadata["fov"] = new_labels
+        fov_metadata["fov"] = new_labels.astype(int)
         exp_metadata["fields_of_view"] = sorted(list(pd.unique(fov_metadata["fov"])))
         exp_metadata["num_fovs"] = len(exp_metadata["fields_of_view"])
-        
 
         # Assign file indices
         assignment_metadata = self.assignidx(fov_metadata.set_index(["fov", "timepoints"]))
