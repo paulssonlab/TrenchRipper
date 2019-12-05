@@ -7,7 +7,6 @@ import pickle
 import shutil
 import cv2
 import pandas as pd
-from memory_profiler import profile
 
 
 import scipy.signal as signal
