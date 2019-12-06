@@ -821,7 +821,7 @@ class phase_segmentation_cluster(phase_segmentation):
             # Measure loading for each trench
             for trench_idx in range(input_data.shape[0]):
                 trench_array = input_data[trench_idx]
-                trench_loading_array = self.measure_trench_loading(trench_array, file_idx=file_idx, trench_idx=trench_idx)
+                trench_loading_array = self.measure_trench_loading(trench_array)
                 trench_output.append(trench_loading_array[np.newaxis])
         trench_output = np.concatenate(trench_output,axis=0)
         return trench_output
@@ -883,7 +883,7 @@ class phase_segmentation_cluster(phase_segmentation):
             # Load data
             future = dask_controller.daskclient.submit(self.load_trench_array_list, self.kymographpath + "/kymograph_", file_idx, self.seg_channel, True, retries=1,priority=random_priorities[k,0]*0.1)
             # MEasure loading
-            future = dask_controller.daskclient.submit(self.measure_trench_loading,future,file_idx,retries=1,priority=random_priorities[k,0]*0.8)
+            future = dask_controller.daskclient.submit(self.measure_trench_loading,future,retries=1,priority=random_priorities[k,0]*0.8)
             # Save to futures
             dask_controller.futures["Trench Loading"].append(future)
     
