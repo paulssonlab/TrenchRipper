@@ -129,7 +129,7 @@ class mother_tracker():
         # Make dataframes for each metric
         all_dt = pd.DataFrame(all_dt, columns=["time", "doubling_time_s", "file_trench_idx", "trenchid", "fov", "file_idx"])
         all_dt_smoothed = pd.DataFrame(all_dt_smoothed, columns=["time", "doubling_time_s", "file_trench_idx", "trenchid", "fov", "file_idx"])
-        all_growth_rate = pd.DataFrame(all_growth_rate, columns=["time", "igr_length", "igr_length_smoothed", "igr_area", "igr_area_smoothed", "igr_length_normed", "igr_length_smoothed_normed", "igr_area_normed", "igr_area_smoothed_normed", "file_trench_idx", "trenchid", "fov", "file_idx"])
+        all_growth_rate = pd.DataFrame(all_growth_rate, columns=["time", "major_axis_length", "major_axis_length_smoothed", "igr_length", "igr_length_smoothed", "igr_area", "igr_area_smoothed", "igr_length_normed", "igr_length_smoothed_normed", "igr_area_normed", "igr_area_smoothed_normed", "file_trench_idx", "trenchid", "fov", "file_idx"])
         # Index by field of view and trench
         all_dt = all_dt.set_index(["fov", "trenchid"])
         all_dt_smoothed = all_dt_smoothed.set_index(["fov", "trenchid"])
