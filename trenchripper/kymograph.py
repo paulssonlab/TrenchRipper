@@ -1074,6 +1074,8 @@ class kymograph_cluster:
             os.remove(proc_file_path)
 
     def reorg_all_kymographs(self,dask_controller):
+        dask_controller.futures = {}
+        
         fovdf = self.meta_handle.read_df("temp_kymograph",read_metadata=True)
         file_list = fovdf["File Index"].unique().tolist()
         metadata = fovdf.metadata

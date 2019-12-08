@@ -432,11 +432,12 @@ class nd_metadata_handler:
             
 
         time_points = x.shape[1]
-        if img_metadata.x_data is not None:
-            acq_times = np.reshape(np.array(list(img_metadata.acquisition_times)),(-1,num_fovs)).T #quick fix for inconsistancies beteen the number of timepoints recorded in acquisition times and the x/y/z positions
-            acq_times = acq_times[:,:time_points]
-        else:
-            acq_times = np.reshape(np.array(list(img_metadata.acquisition_times)[:num_images_expected]),(-1,num_fovs)).T
+        ## This doesn't work when there's wait times????
+#         if img_metadata.x_data is not None:
+#             acq_times = np.reshape(np.array(list(img_metadata.acquisition_times)),(-1,num_fovs)).T #quick fix for inconsistancies beteen the number of timepoints recorded in acquisition times and the x/y/z positions
+#             acq_times = acq_times[:,:time_points]
+#         else:
+        acq_times = np.reshape(np.array(list(img_metadata.acquisition_times)[:num_images_expected]),(-1,num_fovs)).T
         pos_label = np.repeat(np.expand_dims(np.add.accumulate(np.ones(num_fovs,dtype=int))-1,1),time_points,1) ##???
         time_point_labels = np.repeat(np.expand_dims(np.add.accumulate(np.ones(time_points,dtype=int))-1,1),num_fovs,1).T
 
@@ -465,7 +466,7 @@ class nd_metadata_handler:
         exp_metadata["num_fovs"] = len(exp_metadata['fields_of_view'])
         exp_metadata["settings"] = self.get_imaging_settings(nd2file)
         if not self.ignore_fovmetadata:
-            fov_metadata = self.make_fov_df(nd2file)
+            fov_metadata = self.make_fov_df(nd2file, exp_metadata)
             nd2file.close()
             return exp_metadata,fov_metadata
         else:
