@@ -39,7 +39,7 @@ class phase_segmentation:
         wrap_pad (int):
 
     """
-    def __init__(self, init_niblack_k=-0.5, maxima_niblack_k=-0.6, init_smooth_sigma=3, maxima_smooth_sigma=2, init_niblack_window_size=13, maxima_niblack_window_size=13, min_cell_size=100, deviation_from_median=0.3, max_perc_contrast=97, wrap_pad = 0):
+    def __init__(self, init_niblack_k=-0.5, maxima_niblack_k=-0.55, init_smooth_sigma=4, maxima_smooth_sigma=4, init_niblack_window_size=13, maxima_niblack_window_size=13, min_cell_size=150, deviation_from_median=0.3, max_perc_contrast=97, wrap_pad = 0):
         
         self.init_niblack_k = -init_niblack_k
         self.maxima_niblack_k = -maxima_niblack_k
@@ -135,31 +135,53 @@ class phase_segmentation:
         
         # Median filter to remove speckle
         img_median = mh.median_filter(img_contrast,Bc=np.ones((2,2)))
+        pad_size = 6
+        img_median = np.pad(img_median, ((0, 0), (pad_size, pad_size)), "minimum")
         # Edge detection (will pick up trench edges and cell edges)
         img_edges = sk.filters.sobel(img_median)
 
         # Otsu threshold the edges
         T_otsu = sk.filters.threshold_otsu(img_edges)
         img_otsu = (img_edges > T_otsu).astype(bool)
-        img_otsu = img_otsu
+        dilation_kernel = np.array([0]*20 + [1]*21)[:, None]
+        img_dilate = morph.binary_dilation(img_otsu, structure=dilation_kernel, iterations=3)
+        img_filled = fill_holes(img_dilate)
+        img_opened = morph.binary_opening(img_filled, structure = np.ones((1,5)),iterations=1)
+        img_closed = morph.binary_closing(img_opened, structure = np.ones((3,3)),iterations=6)
+        img_drop_filled = morph.binary_dilation(img_closed,structure=dilation_kernel, iterations=5)
+        
+        
 
-        # Close gaps in between
-        img_close = morph.binary_closing(img_otsu, structure = np.ones((3,3)),iterations=6)
+#         # Close gaps in between
+#         img_close = morph.binary_closing(img_otsu, structure = np.ones((3,3)),iterations=6)
+#         img_close = img_close[3:-3, 3:-3]
 
         # Fill holes, remove small particles, and join the bulk of the trench
-        img_filled = fill_holes(img_close)
-        img_open = morph.binary_opening(img_filled, structure = np.ones((3,3)),iterations=2)
-        trench_masks = morph.binary_dilation(img_open,structure = np.ones((9,1)))
+#         img_filled = fill_holes(img_otsu)
+#         img_open = morph.binary_opening(img_filled, structure = np.ones((3,3)),iterations=2)
+        trench_masks = morph.binary_erosion(img_drop_filled, structure = np.ones((1,3)),iterations=3)[:, pad_size:-pad_size]
         
         # Display plots if needed
         if show_plots:        
-            _, (ax1, ax2, ax3, ax4, ax5, ax6) = plt.subplots(1, 6, figsize=(8,10))
+            _, (ax1, ax2, ax3, ax4, ax5, ax6, ax7, ax8, ax9) = plt.subplots(1, 9, figsize=(14,10))
             ax1.imshow(img)
+            ax1.set_title("Original Image")
             ax2.imshow(img_edges)
+            ax2.set_title("Edge detection")
             ax3.imshow(img_otsu)
-            ax4.imshow(img_close)
-            ax5.imshow(img_open)
-            ax6.imshow(trench_masks)
+            ax3.set_title("Thresholding")
+            ax4.imshow(img_dilate)
+            ax4.set_title("Drop fill 1")
+            ax5.imshow(img_filled)
+            ax5.set_title("Fill Holes")
+            ax6.imshow(img_opened)
+            ax6.set_title("Horizontal Opening")
+            ax7.imshow(img_closed)
+            ax7.set_title("Image closing")
+            ax8.imshow(img_drop_filled)
+            ax8.set_title("Drop fill 2")
+            ax9.imshow(trench_masks)
+            ax9.set_title("Final mask")
         return trench_masks
 
     def detect_trenches(self, img, show_plots=False):
@@ -173,10 +195,9 @@ class phase_segmentation:
         """
         # Detect rough areas
         trench_masks = self.detect_rough_trenches(img, show_plots)
-        # Fill trench mask vertically (something the rough algorithm struggles with)
-        trench_masks = morph.binary_closing(trench_masks,structure=np.ones((15,1)),iterations=6)
         # Erode to account for oversegmentation
-        trench_masks = morph.binary_erosion(trench_masks,structure=np.ones((3,3)),iterations=4)
+        trench_masks = morph.binary_erosion(trench_masks,structure=np.ones((1,3)),iterations=3)
+        trench_masks = morph.binary_erosion(trench_masks,structure=np.ones((3,1)),iterations=1)
         # Find regions in the mask
         conn_comp = sk.measure.label(trench_masks,neighbors=4)
         rp_area = [r.area for r in sk.measure.regionprops(conn_comp, cache=False)]
@@ -230,6 +251,13 @@ class phase_segmentation:
             maxima (numpy.ndarray, bool): Mask for watershed seeds
         """
         maxima = self.findCellsInTrenches(img,mask,self.maxima_smooth_sigma,self.maxima_niblack_window_size,self.maxima_niblack_k)
+        img_edges = sk.filters.sobel(img)
+
+        # Otsu threshold the edges
+        T_otsu = sk.filters.threshold_otsu(img_edges)
+        img_otsu = (img_edges > T_otsu*0.7).astype(bool)*mask
+        img_otsu = morph.binary_dilation(img_otsu, np.ones((3,3)))
+        maxima = maxima*(~img_otsu)
         reg_props = sk.measure.regionprops(sk.measure.label(maxima,neighbors=4), cache=False)
         rp_area = [r.area for r in reg_props]
         # Throw out maxima regions that are too small
@@ -721,9 +749,9 @@ class phase_segmentation_cluster(phase_segmentation):
         metadf: in memory storage of metadata pandas dataframe
         bit_max: maximum intensity value for images
     """
-    def __init__(self,headpath,paramfile=True,seg_channel="", init_niblack_k=-0.45, maxima_niblack_k=-0.8, init_smooth_sigma=4, maxima_smooth_sigma=3, init_niblack_window_size=13, maxima_niblack_window_size=13, min_cell_size=100, deviation_from_median=0.3, max_perc_contrast=97, wrap_pad=0):
+    def __init__(self,headpath,paramfile=True,seg_channel="", init_niblack_k=-0.45, maxima_niblack_k=-0.55, init_smooth_sigma=4, maxima_smooth_sigma=4, init_niblack_window_size=13, maxima_niblack_window_size=13, min_cell_size=100, deviation_from_median=0.3, max_perc_contrast=97, wrap_pad=0):
         
-        super(phase_segmentation_cluster, self).__init__(init_niblack_k=init_niblack_k, init_smooth_sigma=init_smooth_sigma, maxima_smooth_sigma=2, init_niblack_window_size=maxima_niblack_window_size, maxima_niblack_window_size=maxima_niblack_window_size, min_cell_size=min_cell_size, deviation_from_median=deviation_from_median, max_perc_contrast=max_perc_contrast, wrap_pad = wrap_pad)
+        super(phase_segmentation_cluster, self).__init__(init_niblack_k=init_niblack_k, init_smooth_sigma=init_smooth_sigma, maxima_smooth_sigma=maxima_smooth_sigma,maxima_niblack_k=maxima_niblack_k, init_niblack_window_size=maxima_niblack_window_size, maxima_niblack_window_size=maxima_niblack_window_size, min_cell_size=min_cell_size, deviation_from_median=deviation_from_median, max_perc_contrast=max_perc_contrast, wrap_pad = wrap_pad)
 
         self.headpath = headpath
         self.seg_channel = seg_channel
@@ -882,7 +910,7 @@ class phase_segmentation_cluster(phase_segmentation):
         for k,file_idx in enumerate(file_list):
             # Load data
             future = dask_controller.daskclient.submit(self.load_trench_array_list, self.kymographpath + "/kymograph_", file_idx, self.seg_channel, True, retries=1,priority=random_priorities[k,0]*0.1)
-            # MEasure loading
+            # Measure loading
             future = dask_controller.daskclient.submit(self.measure_trench_loading,future,retries=1,priority=random_priorities[k,0]*0.8)
             # Save to futures
             dask_controller.futures["Trench Loading"].append(future)

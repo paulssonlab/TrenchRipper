@@ -10,6 +10,7 @@ import pandas as pd
 
 
 import scipy.signal as signal
+import scipy.interpolate as interpolate
 from .utils import kymo_handle,pandas_hdf5_handler,writedir
 from .cluster import hdf5lock
 from .DetectPeaks import detect_peaks
@@ -30,7 +31,7 @@ class mother_tracker():
         kymodf: metadata for each kymograph
 
     """
-    def __init__(self, headpath):
+    def __init__(self, headpath, timepoint_full_trenches=0):
         self.headpath = headpath
         self.phasesegmentationpath = headpath + "/phasesegmentation"
         self.phasedatapath = self.phasesegmentationpath + "/cell_data"
@@ -39,6 +40,7 @@ class mother_tracker():
         self.metapath = headpath + "/metadata.hdf5"
         self.meta_handle = pandas_hdf5_handler(self.metapath)
         self.kymodf = self.meta_handle.read_df("kymograph",read_metadata=True)
+        self.timepoint_full_trenches = timepoint_full_trenches
     
 #     @profile
     def get_growth_props(self, file_idx, lower_threshold=0.35, upper_threshold=0.75):
@@ -99,7 +101,7 @@ class mother_tracker():
         return file_dt, file_dt_smoothed, file_growth_rate
     
 #     @profile
-    def save_all_growth_props(self, file_list=None, lower_threshold=0.35, upper_threshold=0.75):
+    def save_all_growth_props(self, file_list=None, lower_threshold=0.3, upper_threshold=0.75):
         """ Save growth properties (doubling time, instantaneous growth rate data for a single cell)
 
         Args:
@@ -131,9 +133,9 @@ class mother_tracker():
         all_dt_smoothed = pd.DataFrame(all_dt_smoothed, columns=["time", "doubling_time_s", "file_trench_idx", "trenchid", "fov", "file_idx"])
         all_growth_rate = pd.DataFrame(all_growth_rate, columns=["time", "major_axis_length", "major_axis_length_smoothed", "igr_length", "igr_length_smoothed", "igr_area", "igr_area_smoothed", "igr_length_normed", "igr_length_smoothed_normed", "igr_area_normed", "igr_area_smoothed_normed", "file_trench_idx", "trenchid", "fov", "file_idx"])
         # Index by field of view and trench
-        all_dt = all_dt.set_index(["fov", "trenchid"])
-        all_dt_smoothed = all_dt_smoothed.set_index(["fov", "trenchid"])
-        all_growth_rate = all_growth_rate.set_index(["fov", "trenchid"])
+        all_dt = all_dt.set_index(["trenchid"])
+        all_dt_smoothed = all_dt_smoothed.set_index([ "trenchid"])
+        all_growth_rate = all_growth_rate.set_index([ "trenchid"])
         # Save to HDF5
         with HDFStore(os.path.join(self.growthdatapath)) as store:            
             store.put("doubling_times", all_dt, data_columns=True)
@@ -177,7 +179,7 @@ class mother_tracker():
         # Throw out trenches once you see a run of more than 5 timepoints with loading outside the loading thresholds
         if cutoff_index < 5:
             return None, None, None
-        for i in range(len(loading_fractions)-4):
+        for i in range(min(len(loading_fractions)-4, self.timepoint_full_trenches), len(loading_fractions)-4):
             if np.all(times_outside_thresholds[i:i+5]):
                 cutoff_index = i
                 break
@@ -255,4 +257,33 @@ class mother_tracker():
                     else:
                         for j in range(left_idx+1, right_idx):
                             data[j,:] = data[left_idx,:] + (data[right_idx,:]-data[left_idx,:]) * (j-left_idx)/(right_idx-left_idx)
+        ## Fill in unusual spikes with a moving average
+        window_size = 2
+        higher_factor = 1.5
+        lower_factor = 0.75
+        for i in range(window_size, data.shape[0]-window_size):
+            left_higher_than = data[i,:] > data[i-window_size:i,:]*higher_factor
+            right_higher_than = data[i,:] > data[i+1:i+window_size+1,:]*higher_factor
+            left_lower_than = data[i,:] < data[i-window_size:i,:]*lower_factor
+            right_lower_than = data[i,:] < data[i+1:i+window_size+1,:]*lower_factor
+            if np.any(left_higher_than)*np.any(right_higher_than): 
+                average_kernel = np.concatenate((np.any(left_higher_than, axis=1), np.array([0]), np.any(right_higher_than, axis=1)))
+                x = np.argwhere(average_kernel)
+                data_window = data[i-window_size:i+window_size+1,:]
+                for col in range(data_window.shape[1]):
+                    y = data_window[x, col]
+#                     print(x)
+#                     print(y)
+                    f = interpolate.interp1d(x.ravel(), y.ravel())
+                    data[i,col] = f(window_size)
+            elif np.any(left_lower_than)*np.any(right_lower_than):
+                average_kernel = np.concatenate((np.any(left_lower_than, axis=1), np.array([0]), np.any(right_lower_than, axis=1)))
+                x = np.argwhere(average_kernel)
+                data_window = data[i-window_size:i+window_size+1,:]
+                for col in range(data_window.shape[1]):
+                    y = data_window[x, col]
+#                     print(x)
+#                     print(y)
+                    f = interpolate.interp1d(x.ravel(), y.ravel())
+                    data[i,col] = f(window_size)
         return data
