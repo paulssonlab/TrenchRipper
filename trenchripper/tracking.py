@@ -58,7 +58,7 @@ class mother_tracker():
         """
 
         # Load data telling us where in the file each trench is
-        file_df = pd.read_hdf(os.path.join(self.phasedatapath, "data_%d.h5" % file_idx))
+        file_df = pd.read_hdf(os.path.join(self.phasedatapath, "data_%d.h5" % file_idx), "metrics")
         file_df = file_df.reset_index()
         file_df = file_df.set_index(["file_trench_index", "trench_cell_index"])
         file_df = file_df.sort_index(level=0)
@@ -131,7 +131,7 @@ class mother_tracker():
         # Make dataframes for each metric
         all_dt = pd.DataFrame(all_dt, columns=["time", "doubling_time_s", "file_trench_idx", "trenchid", "fov", "file_idx"])
         all_dt_smoothed = pd.DataFrame(all_dt_smoothed, columns=["time", "doubling_time_s", "file_trench_idx", "trenchid", "fov", "file_idx"])
-        all_growth_rate = pd.DataFrame(all_growth_rate, columns=["time", "major_axis_length", "major_axis_length_smoothed", "igr_length", "igr_length_smoothed", "igr_area", "igr_area_smoothed", "igr_length_normed", "igr_length_smoothed_normed", "igr_area_normed", "igr_area_smoothed_normed", "file_trench_idx", "trenchid", "fov", "file_idx"])
+        all_growth_rate = pd.DataFrame(all_growth_rate, columns=["time", "major_axis_length", "major_axis_length_smoothed", "minor_axis_length", "solidity", "igr_length", "igr_length_smoothed", "igr_area", "igr_area_smoothed", "igr_length_normed", "igr_length_smoothed_normed", "igr_area_normed", "igr_area_smoothed_normed", "file_trench_idx", "trenchid", "fov", "file_idx"])
         # Index by field of view and trench
         all_dt = all_dt.set_index(["trenchid"])
         all_dt_smoothed = all_dt_smoothed.set_index([ "trenchid"])
@@ -188,12 +188,17 @@ class mother_tracker():
         # extract data from dataframes
         times = np.array(mother_data_frame["time_s"])[:cutoff_index]
         major_axis_length = np.array(mother_data_frame["major_axis_length"])[:cutoff_index]
+        minor_axis_length = np.array(mother_data_frame["minor_axis_length"])[:cutoff_index]
+        solidity = np.array(mother_data_frame["solidity"])[:cutoff_index]
+
         area = np.array(mother_data_frame["area"])[:cutoff_index]
         # Interpolate individual points where trench loading is messed up,
         # indicative of drift or bad segmentation
-        repaired_data = self.repair_trench_loadings(np.array([major_axis_length, area]).T, times_outside_thresholds[:cutoff_index])
+        repaired_data = self.repair_trench_loadings(np.array([major_axis_length, area, minor_axis_length, solidity]).T, times_outside_thresholds[:cutoff_index])
         major_axis_length = repaired_data[:,0].flatten()
         area = repaired_data[:,1].flatten()
+        minor_axis_length = repaired_data[:,2].flatten()
+        solidity = repaired_data[:,3].flatten()
         
         # Smooth with Wiener filter (minimum mean squared error)
         mal_smoothed = signal.wiener(major_axis_length)
@@ -208,7 +213,7 @@ class mother_tracker():
         instantaneous_growth_rate_length_smoothed = np.gradient(mal_smoothed, times)
         instantaneous_growth_rate_area_smoothed = np.gradient(area_smoothed, times)
         
-        growth_rate_data = np.array([times, major_axis_length, mal_smoothed, instantaneous_growth_rate_length, instantaneous_growth_rate_length_smoothed, instantaneous_growth_rate_area, instantaneous_growth_rate_area_smoothed]).T
+        growth_rate_data = np.array([times, major_axis_length, mal_smoothed, instantaneous_growth_rate_length, instantaneous_growth_rate_length_smoothed, instantaneous_growth_rate_area, instantaneous_growth_rate_area_smoothed, minor_axis_length, solidity]).T
         
         growth_rate_data = np.concatenate([growth_rate_data, growth_rate_data[:,3:5]/major_axis_length[:, None], growth_rate_data[:,5:7]/area[:, None]], axis=1)
                                                

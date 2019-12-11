@@ -969,7 +969,7 @@ class phase_segmentation_cluster(phase_segmentation):
         
         globaldf = self.meta_handle.read_df("global", read_metadata=True)
         # get pixel scaling so that measurements are in micrometers
-        pixel_scaling = globaldf.metadata["pixel_microns"]
+        pixel_scaling = metadata["pixel_microns"]
 
 
         if file_list is None:
@@ -988,6 +988,50 @@ class phase_segmentation_cluster(phase_segmentation):
                 trench_loadings = kymodf.loc[file_idx, "Trench Loading"]
                 fov_idx = kymodf.loc[file_idx, "fov"]
                 dask_controller.futures["Cell Props %d: " % file_idx] = dask_controller.daskclient.submit(self.extract_cell_data, file_idx, fov_idx, times, global_trench_indices, trench_loadings, props_to_grab, pixel_scaling, metadata, priority=random_priorities[k, 1]*8)
+
+    def dask_extract_cell_data_mask(self, dask_controller, channels, props_to_grab, file_list=None, overwrite=False):
+        """ Extract cell fluorescence properties using phase segmentation graph
+
+        Args:
+            dask_controller (trenchripper.dask_controller): Helper object to handle dask jobs
+            props_to_grab(list, str): metrics to extract from regionprops data
+            file_list (list, int): Subset kymograph files
+            overwrite (bool): Whether to overwrite the output directory
+        Returns:
+            None
+
+        """
+        dask_controller.futures = {}
+        # write directory
+        writedir(self.phasedatapath,overwrite=overwrite)
+        
+        # load metadata
+        kymodf = self.meta_handle.read_df("kymograph",read_metadata=True)
+        metadata = kymodf.metadata
+        
+        globaldf = self.meta_handle.read_df("global", read_metadata=True)
+        # get pixel scaling so that measurements are in micrometers
+        pixel_scaling = globaldf.metadata["pixel_microns"]
+
+
+        if file_list is None:
+            file_list = kymodf["File Index"].unique().tolist()
+        num_file_jobs = len(file_list)
+        num_channels = len(channels)
+        # index according to how the final cell data should be organized
+        kymodf = kymodf.reset_index()
+        kymodf = kymodf.set_index(["File Index", "File Trench Index", "timepoints"])
+
+        random_priorities = np.random.uniform(size=(num_file_jobs,num_channels))
+        for k,file_idx in enumerate(file_list):
+            for k2, channel in enumerate(channels):
+                segmented_masks_file = "segmentation_" + str(file_idx) + ".hdf5"
+                if segmented_masks_file in os.listdir(self.phasesegmentationpath):
+                    times = kymodf.loc[file_idx, "time (s)"]
+                    global_trench_indices = kymodf.loc[file_idx, "trenchid"]
+                    trench_loadings = kymodf.loc[file_idx, "Trench Loading"]
+                    fov_idx = kymodf.loc[file_idx, "fov"]
+                    dask_controller.futures["Cell Props %d: " % file_idx] = dask_controller.daskclient.submit(self.extract_cell_data_mask, file_idx, fov_idx, channel, times, global_trench_indices, trench_loadings, props_to_grab, pixel_scaling, metadata, priority=random_priorities[k, k2]*8)
     
     def extract_cell_data(self, file_idx, fov_idx, times, global_trench_indices, trench_loadings, props_to_grab, pixel_scaling, metadata=None):
         """ Get cell morphology data from segmented trenches
@@ -1066,3 +1110,82 @@ class phase_segmentation_cluster(phase_segmentation):
             del seg_props
             del trench_time_dataframes
         return "Done"
+    
+    def extract_cell_data_mask(self, file_idx, fov_idx, channel, times, global_trench_indices, trench_loadings, props_to_grab, pixel_scaling, metadata=None):
+            """ Get cell morphology data from segmented trenches
+
+            Args:
+                file_idx (int): hdf5 file index
+                fov_idx (int): Field of view in the original data
+                channel (str): channel to measure intensities on
+                times: (list, float): Time indices to look at
+                global_trench_indices (list, int): Trench IDs
+                props_to_grab (list, str): list of properties to grab
+                pixel_scaling (float): microns/pixel
+                metadata (pandas.Dataframe): metdata dataframe
+            Returns:
+                "Done"
+
+            """
+            # Get segmented masks
+            segmented_mask_array = self.load_trench_array_list(self.phasesegmentationpath + "/segmentation_", file_idx, "data", False)
+            # Get kymographs for other channel
+            kymograph = self.load_trench_array_list(self.kymographpath + "/kymograph_", file_idx, self.seg_channel, False)
+            # Load output file
+            with HDFStore(os.path.join(self.phasedatapath, "data_%d.h5" % file_idx)) as store:
+                if "/metrics_%s" % channel in store.keys():
+                    store.remove("/metrics_%s" % channel)
+                trench_time_dataframes = {}
+                first_dict_flag = True
+                # Iterate through trenches and times
+                for trench_idx in range(segmented_mask_array.shape[0]):
+                    for time_idx in range(segmented_mask_array.shape[1]):
+                        # get regionprops
+                        seg_props = sk.measure.regionprops(segmented_mask_array[trench_idx, time_idx,:,:], intensity_image=kymograph[trench_idx, time_idx,:,:], cache=False)
+                        if len(seg_props) > 0:
+                            # Convert to dict
+                            seg_props = self.props_to_dict(seg_props, props_to_grab)
+                            # Add metadata
+                            seg_props["trenchid"] = [global_trench_indices.loc[trench_idx,time_idx]]*len(seg_props["label"])
+                            seg_props["file_trench_index"] = [trench_idx]*len(seg_props["label"])
+                            seg_props["time_s"] = [times.loc[trench_idx, time_idx]]*len(seg_props["label"])
+                            seg_props["trench_loadings"] = [trench_loadings.loc[trench_idx,time_idx]]*len(seg_props["label"])
+                            seg_props["fov"] = [fov_idx.loc[trench_idx,time_idx]]*len(seg_props["label"])
+                            if first_dict_flag:
+                                trench_time_dataframes = seg_props
+                                first_dict_flag = False
+                            else:
+                                for prop in trench_time_dataframes.keys():
+                                    trench_time_dataframes[prop].extend(seg_props[prop])
+                        del seg_props
+                del segmented_mask_array
+
+                # Convert to dataframe
+                seg_props = pd.DataFrame(trench_time_dataframes)
+                # Rename label to trench index
+                seg_props["trench_cell_index"] = seg_props["label"]
+                seg_props = seg_props.drop("label", axis=1)
+
+                # Convert bounding box to multiple columns
+                if "bbox" in props_to_grab:
+                    seg_props[['min_row', 'min_col', 'max_row', 'max_col']] = pd.DataFrame(seg_props['bbox'].tolist(), index=seg_props.index)
+                    seg_props = seg_props.drop("bbox", axis=1)
+                # Convert centroid to multiple columns
+                if "centroid" in props_to_grab:
+                    seg_props[['centy', 'centx']] = pd.DataFrame(seg_props['centroid'].tolist(), index=seg_props.index)
+                    seg_props = seg_props.drop("centroid", axis=1)
+
+                # Convert area and lengths to pixels
+                length_scale_measurements = set(["major_axis_length", "equivalent_diameter", "minor_axis_length", "perimeter"])
+                for prop in props_to_grab:
+                    if prop in length_scale_measurements:
+                        seg_props[prop] = seg_props[prop]*pixel_scaling
+                if "area" in props_to_grab:
+                    seg_props["area"] = seg_props["area"]*(pixel_scaling)**2
+                # Index
+                seg_props = seg_props.set_index(["file_trench_index", "time_s", "trench_cell_index"])
+                # Save file
+                store.put("/metrics_%s" % channel, seg_props, data_columns=True)
+                del seg_props
+                del trench_time_dataframes
+            return "Done"
