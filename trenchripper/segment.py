@@ -1,5 +1,6 @@
 import numpy as np
 import skimage as sk
+import scipy as sp
 import h5py
 import os
 import copy
@@ -8,7 +9,7 @@ import shutil
 import cv2
 import pandas as pd
 
-from skimage import measure,feature,segmentation,future,util,morphology,filters
+from skimage import measure,feature,segmentation,future,util,morphology,filters,exposure
 from .utils import kymo_handle,pandas_hdf5_handler,writedir
 from .cluster import hdf5lock
 from time import sleep
@@ -20,443 +21,6 @@ from pandas import HDFStore
 
 from matplotlib import pyplot as plt
 
-class phase_segmentation:
-    """ Segmentation algorithm for high mag phase images
-
-    Attributes:
-        init_niblack_k (float): k parameter for niblack thresholding of cells
-        maxima_niblack_k (float): k parameter for more rigorous thresholding to determine
-                        watershed seeds
-        init_smooth_sigma (float): smoothing value for cell segmentation
-        maxima_smooth_sigma (float): smoothing value for seed segmentation
-        maxima_niblack_window_size (int): window size for niblack thresholding of seeds
-        init_niblack_window_size (int): window size for niblack thresholding of cells
-        min_cell_size (int): throw out mask regions smaller than this size
-        deviation_from_median (float): Relative deviation from median cell size for outlier
-                                detection
-        max_perc_contrast (float): Histogram percentile above which we cap intensities
-                                (makes thresholding more robust)
-        wrap_pad (int):
-
-    """
-    def __init__(self, init_niblack_k=-0.5, maxima_niblack_k=-0.55, init_smooth_sigma=4, maxima_smooth_sigma=4, init_niblack_window_size=13, maxima_niblack_window_size=13, min_cell_size=150, deviation_from_median=0.3, max_perc_contrast=97, wrap_pad = 0):
-        
-        self.init_niblack_k = -init_niblack_k
-        self.maxima_niblack_k = -maxima_niblack_k
-        self.init_smooth_sigma = init_smooth_sigma
-        self.maxima_smooth_sigma = maxima_smooth_sigma
-        self.maxima_niblack_window_size = maxima_niblack_window_size
-        self.init_niblack_window_size = init_niblack_window_size
-        self.min_cell_size = min_cell_size
-        self.deviation_from_median = deviation_from_median
-        self.max_perc_contrast= max_perc_contrast
-        self.wrap_pad = 0
-        
-    def remove_large_objects(self, conn_comp, max_size=4000):
-        """ Remove segmented regions that are too large
-
-        Args:
-            conn_comp(numpy.ndarray, int): Segmented connected components where each
-                                        component is numbered
-            max_size(int): Throw out regions where area is greater than this
-
-        Returns:
-            out(numpy.ndarray, int): Connected components array with large regions
-                                    removed
-        """
-        out = np.copy(conn_comp)
-        component_sizes = np.bincount(conn_comp.ravel())
-        too_big = component_sizes > max_size
-        too_big_mask = too_big[conn_comp]
-        out[too_big_mask] = 0
-        return out
-    
-    def to_8bit(self,img_arr,bit_max=None):
-        """ Rescale image and convert to 8bit
-
-        Args:
-            img_arr(numpy.ndarray, int): input image to be rescaled
-            bit_max(int): maximum value for intensities
-        Returns:
-            norm_byte_array(numpy.ndarray, int): 8-bit image
-
-        """
-        # Set maximum value
-        img_max = np.max(img_arr)+0.0001
-        if bit_max is None:
-            max_val = img_max
-        else:
-            max_val = max(img_max,bit_max)
-        # Set minimum value
-        min_val = np.min(img_arr)
-        # Scale
-        norm_array = (img_arr-min_val)/(max_val-min_val)
-        # Cast as 8bit image
-        norm_byte_array = sk.img_as_ubyte(norm_array)
-        return norm_byte_array
-    
-    def preprocess_img(self,img_arr,sigma=1.,bit_max=0):
-        """ Convert image stack to 8bit and smooth with gaussian filter
-
-        Args:
-            img_arr(numpy.ndarray, int): input image stack (t x y x x)
-            sigma(float): 
-            bit_max(int): maximum value for intensities
-        Returns:
-            img_smooth(numpy.ndarray, int): smoothed 8-bit image stack (t x y x x)
-        """
-        img_smooth = copy.copy(img_arr)
-        for t in range(img_arr.shape[0]):
-            img_smooth[t] = self.to_8bit(sk.filters.gaussian(img_arr[t],sigma=sigma,preserve_range=True,mode='reflect'),bit_max=bit_max)
-        return img_smooth
-    
-    def detect_rough_trenches(self, img, show_plots=False):
-        """ Get rough estimate of where the trench is using otsu thresholding
-
-        Args:
-            img (numpy.ndarray, int): Kymograph image to segment
-            show_plots (bool): Whether to display the segmentation steps
-        Returns:
-            trench_masks (numpy.ndarray, bool): Rough estimates of trench masks
-        """
-
-        # Fill holes using morphologicla reconstruction
-        def fill_holes(img):
-            seed = np.copy(img)
-            seed[1:-1, 1:-1] = img.max()
-            strel = sk.morphology.square(3, dtype=bool)
-            img_filled = sk.morphology.reconstruction(seed, img, selem=strel, method='erosion')
-            img_filled = img_filled.astype(bool)
-            return img_filled
-    
-        # Throw out intensity outliers
-        max_val = np.percentile(img,self.max_perc_contrast)
-        img_contrast = sk.exposure.rescale_intensity(img, in_range=(0,max_val))
-        
-        # Median filter to remove speckle
-        img_median = mh.median_filter(img_contrast,Bc=np.ones((2,2)))
-        pad_size = 6
-        img_median = np.pad(img_median, ((0, 0), (pad_size, pad_size)), "minimum")
-        # Edge detection (will pick up trench edges and cell edges)
-        img_edges = sk.filters.sobel(img_median)
-
-        # Otsu threshold the edges
-        T_otsu = sk.filters.threshold_otsu(img_edges)
-        img_otsu = (img_edges > T_otsu).astype(bool)
-        dilation_kernel = np.array([0]*20 + [1]*21)[:, None]
-        img_dilate = morph.binary_dilation(img_otsu, structure=dilation_kernel, iterations=3)
-        img_filled = fill_holes(img_dilate)
-        img_opened = morph.binary_opening(img_filled, structure = np.ones((1,5)),iterations=1)
-        img_closed = morph.binary_closing(img_opened, structure = np.ones((3,3)),iterations=6)
-        img_drop_filled = morph.binary_dilation(img_closed,structure=dilation_kernel, iterations=5)
-        
-        
-
-#         # Close gaps in between
-#         img_close = morph.binary_closing(img_otsu, structure = np.ones((3,3)),iterations=6)
-#         img_close = img_close[3:-3, 3:-3]
-
-        # Fill holes, remove small particles, and join the bulk of the trench
-#         img_filled = fill_holes(img_otsu)
-#         img_open = morph.binary_opening(img_filled, structure = np.ones((3,3)),iterations=2)
-        trench_masks = morph.binary_erosion(img_drop_filled, structure = np.ones((1,3)),iterations=3)[:, pad_size:-pad_size]
-        
-        # Display plots if needed
-        if show_plots:        
-            _, (ax1, ax2, ax3, ax4, ax5, ax6, ax7, ax8, ax9) = plt.subplots(1, 9, figsize=(14,10))
-            ax1.imshow(img)
-            ax1.set_title("Original Image")
-            ax2.imshow(img_edges)
-            ax2.set_title("Edge detection")
-            ax3.imshow(img_otsu)
-            ax3.set_title("Thresholding")
-            ax4.imshow(img_dilate)
-            ax4.set_title("Drop fill 1")
-            ax5.imshow(img_filled)
-            ax5.set_title("Fill Holes")
-            ax6.imshow(img_opened)
-            ax6.set_title("Horizontal Opening")
-            ax7.imshow(img_closed)
-            ax7.set_title("Image closing")
-            ax8.imshow(img_drop_filled)
-            ax8.set_title("Drop fill 2")
-            ax9.imshow(trench_masks)
-            ax9.set_title("Final mask")
-        return trench_masks
-
-    def detect_trenches(self, img, show_plots=False):
-        """ Fully detect trenches in a kymograph image
-
-        Args:
-            img (numpy.ndarray, int): Kymograph image to segment
-            show_plots (bool): Whether to display the segmentation steps
-        Returns:
-            trench_masks (numpy.ndarray, bool): Rough estimates of trench masks
-        """
-        # Detect rough areas
-        trench_masks = self.detect_rough_trenches(img, show_plots)
-        # Erode to account for oversegmentation
-        trench_masks = morph.binary_erosion(trench_masks,structure=np.ones((1,3)),iterations=3)
-        trench_masks = morph.binary_erosion(trench_masks,structure=np.ones((3,1)),iterations=1)
-        # Find regions in the mask
-        conn_comp = sk.measure.label(trench_masks,neighbors=4)
-        rp_area = [r.area for r in sk.measure.regionprops(conn_comp, cache=False)]
-        # Select the largest region as the trench mask
-        if len(rp_area) > 0:
-            max_region = np.argmax(rp_area)+1
-            trench_masks[conn_comp != max_region] = 0
-        return trench_masks
-    
-    def medianFilter(self, img):
-        """ Median filter helper function
-        """
-        img_median = mh.median_filter(img,Bc=np.ones((3,3)))
-        return img_median
-    
-    def findCellsInTrenches(self, img, mask,sigma,window_size,niblack_k):
-        """ Segment cell regions (not separated yet by watershedding) in a trench
-
-        Args:
-            img (numpy.ndarray, int): image
-            mask (numpy.ndarray, bool): trench mask
-            sigma (float): Gaussian filter kernel size
-            window_size (int): Size of niblack filter
-            niblack_k (float): K parameter for niblack filtering (higher is more rigorous)
-        Returns:
-            threshed (numpy.ndarray, bool): Mask for cell regions
-
-        """
-        img_smooth = img
-        # Smooth the image
-        if sigma > 0:    
-            img_smooth = sk.filters.gaussian(img,sigma=sigma,preserve_range=True,mode='reflect')
-
-        # Apply Niblack threshold to identify white regions
-        thresh_niblack = sk.filters.threshold_niblack(img_smooth, window_size = window_size, k= niblack_k)
-        
-        # Look for black regions (cells dark under phase)
-        threshed = (img <= thresh_niblack).astype(bool)
-        
-        # Apply trench mask
-        if mask is not None:
-            threshed = threshed*mask
-        return threshed
-    
-    def findWatershedMaxima(self, img,mask):
-        """ Find watershed seeds using rigorous niblack threshold
-        Args:
-            img (numpy.ndarray, int): image
-            mask (numpy.ndarray, bool): trench mask
-        Returns:
-            maxima (numpy.ndarray, bool): Mask for watershed seeds
-        """
-        maxima = self.findCellsInTrenches(img,mask,self.maxima_smooth_sigma,self.maxima_niblack_window_size,self.maxima_niblack_k)
-        img_edges = sk.filters.sobel(img)
-
-        # Otsu threshold the edges
-        T_otsu = sk.filters.threshold_otsu(img_edges)
-        img_otsu = (img_edges > T_otsu*0.7).astype(bool)*mask
-        img_otsu = morph.binary_dilation(img_otsu, np.ones((3,3)))
-        maxima = maxima*(~img_otsu)
-        reg_props = sk.measure.regionprops(sk.measure.label(maxima,neighbors=4), cache=False)
-        rp_area = [r.area for r in reg_props]
-        # Throw out maxima regions that are too small
-        med_size = np.median(rp_area)
-        cutoff_size = int(max(0,med_size/6))
-        maxima = sk.morphology.remove_small_objects(maxima,min_size=cutoff_size)
-        return maxima
-
-    def findWatershedMask(self, img,mask):
-        """ Find cell regions to watershed using less rigorous niblack threshold
-        Args:
-            img (numpy.ndarray, int): image
-            mask (numpy.ndarray, bool): trench mask
-        Returns:
-            img_mask (numpy.ndarray, bool): Mask for cell regions
-        """
-        img_mask = self.findCellsInTrenches(img,mask,self.init_smooth_sigma,self.init_niblack_window_size,self.init_niblack_k)
-        img_mask = mh.dilate(mh.dilate(img_mask),Bc=np.ones((1,3),dtype=np.bool))
-        img_mask = sk.morphology.remove_small_objects(img_mask,min_size=4)
-        return img_mask
-
-    def extract_connected_components_phase(self, threshed, maxima, return_all = False, show_plots=False):
-
-        """
-        phase segmentation and connected components detection algorithm
-
-        :param img: numpy array containing image
-        :param trench_masks: you can supply your own trench_mask rather than computing it each time
-        :param flip_trenches: if mothers are on bottom of image set to True
-        :param cut_from_bottom: how far to crop the bottom of the detected trenches to avoid impacting segmentation
-        :param above_trench_pad: how muching padding above the mother cell
-        :param init_smooth_sigma: how much smoothing to apply to the image for the initial niblack segmentation
-        :param init_niblack_window_size: size of niblack window for segmentation
-        :param init_niblack_k: k-offset for initial niblack segmentation
-        :param maxima_smooth_sigma: how much smoothing to use for image that determines maxima used to seed watershed
-        :param maxima_niblack_window_size: size of niblack window for maxima determination
-        :param maxima_niblack_k: k-offset for maxima determination using niblack
-        :param min_cell_size: minimum size of cell in pixels
-        :param max_perc_contrast: scale contrast before median filter application
-        :param return_all: whether just the connected component or the connected component, 
-        thresholded image pre-watershed and maxima used in watershed
-        :return: 
-            if return_all = False: a connected component matrix
-            if return_all = True: connected component matrix, 
-            thresholded image pre-watershed and maxima used in watershed
-
-        """
-
-        # Get distance transforms
-        distances = mh.stretch(mh.distance(threshed))
-        # Label seeds
-        spots, n_spots = mh.label(maxima,Bc=np.ones((3,3)))
-        surface = (distances.max() - distances)
-        # Watershed
-        conn_comp = sk.morphology.watershed(surface, spots, mask=threshed)
-        # Label connected components
-        conn_comp = sk.measure.label(conn_comp,neighbors=4)
-        conn_comp = sk.morphology.remove_small_objects(conn_comp,min_size=self.min_cell_size)
-        
-        if show_plots:        
-            fig2, (ax1, ax2, ax3, ax4) = plt.subplots(1, 4, figsize=(5,10))
-            ax1.imshow(distances)
-            ax2.imshow(maxima)
-            ax3.imshow(spots)
-            ax4.imshow(conn_comp)
-        return conn_comp
-        
-    def segment(self, img, return_all=False, show_plots=False):
-        """ Run segmentation for a single image
-
-        Args:
-            img (numpy.ndarray, int): image
-            return_all (bool): Whether to return intermediate masks in adition
-                            to final connected components
-            show_plots (bool): Whether to show plots 
-        Returns:
-            conn_comp (numpy.ndarray, int): Mask of segmented cells, each cell
-                                        has a different numbered label
-            trench_masks (numpy.ndarray, bool): Mask of trench regions
-            img_mask (numpy.ndarray, bool): Cells pre-watershedding
-            maxima (numpy.ndarray, bool): Watershed seeds
-        """
-        trench_masks = self.detect_trenches(img, show_plots)
-        img_median = mh.median_filter(img,Bc=np.ones((3,3)))
-        img_mask = self.findWatershedMask(img_median,trench_masks)
-        maxima = self.findWatershedMaxima(img_median,img_mask)
-        conn_comp = self.extract_connected_components_phase(img_mask, maxima, show_plots=show_plots)
-        
-        if return_all:
-            return conn_comp, trench_masks, img_mask, maxima
-        else:
-            return conn_comp
-    
-    def find_trench_masks_and_median_filtered_list(self, trench_array_list):
-        """ Find trench masks and median filtered images for a list of individual kymographs
-
-        Args:
-            trench_array_list (list): List of numpy.ndarray (t x y x x) representing each
-                                    kymograph
-        Returns:
-            trench_masks_list (list): List of boolean masks for the identified trenches
-            img_medians_list (list): List of median-filtered images
-        """
-        trench_masks_list = np.empty_like(trench_array_list, dtype=bool)
-        img_medians_list = np.empty_like(trench_array_list, dtype=np.uint8)
-        for tr in range(trench_array_list.shape[0]):
-            for t in range(trench_array_list.shape[1]):
-                trench_masks_list[tr,t,:,:] = self.detect_trenches(trench_array_list[tr,t,:,:])
-                img_medians_list[tr,t,:,:] = self.medianFilter(trench_array_list[tr,t,:,:])
-        return trench_masks_list, img_medians_list
-    
-    def find_watershed_mask_list(self, trench_mask_and_median_filtered_list):
-        """ Find cell regions pre-watershed for a list of kymographs
-
-        Args:
-            trench_mask_and_median_filtered_list (list):
-                Lists of boolean masks for trenches, and median-filtered images
-        Returns:
-            watershed_masks_list (list): List of boolean masks for cell regions
-            img_array_list (list): List of median-filtered images
-        """
-        trench_mask_array_list, img_array_list = trench_mask_and_median_filtered_list
-        watershed_masks_list = np.empty_like(img_array_list, dtype=bool)
-        for tr in range(img_array_list.shape[0]):
-            for t in range(img_array_list.shape[1]):
-                watershed_masks_list[tr,t,:,:] = self.findWatershedMask(img_array_list[tr,t,:,:], trench_mask_array_list[tr,t,:,:])
-        return watershed_masks_list, img_array_list
-        
-    def find_watershed_maxima_list(self, watershed_mask_and_median_filtered_list):
-        """ Find watershed seeds for a list of kymographs
-
-        Args:
-            watershed_mask_and_median_filtered_list (list):
-                Lists of boolean masks for cell regions, and median-filtered images
-        Returns:
-            watershed_maxima_list (list): List of boolean masks for watershed seeds
-            masks_list (list): List of boolean masks for cell regions
-        """
-        masks_list, img_array_list = watershed_mask_and_median_filtered_list
-        watershed_maxima_list = np.empty_like(img_array_list, dtype=bool)
-        for tr in range(img_array_list.shape[0]):
-            for t in range(img_array_list.shape[1]):
-                watershed_maxima_list[tr,t,:,:] = self.findWatershedMaxima(img_array_list[tr,t,:,:], masks_list[tr,t,:,:])
-        return watershed_maxima_list, masks_list
-    
-    def find_conn_comp_list(self, watershed_maxima_and_masks_list): #masks_arr is tr,t,y,x
-        """ Watershed cells and return final segmentations for a list of kymoraphs
-
-        Args:
-            watershed_maxima_and_masks_list (list):
-                Lists of boolean masks for watershed seeds and for cell regions
-        Returns:
-            watershed_maxima_list (list): List of boolean masks for watershed seeds
-            masks_list (list): List of boolean masks for cell regions
-        """
-        maxima_list, masks_list = watershed_maxima_and_masks_list
-        final_masks_list = np.empty_like(masks_list, dtype=np.uint8)
-        for tr in range(masks_list.shape[0]):
-            for t in range(masks_list.shape[1]):
-                final_masks_list[tr,t,:,:] = self.extract_connected_components_phase(masks_list[tr,t,:,:], maxima_list[tr,t,:,:])
-        return final_masks_list
-    
-    def get_trench_loading_fraction(self, img):
-        """ Calculate loading fraction, basically how much of the trench mask is filled with black stuff
-
-        Args:
-            img (numpy.ndarray): Image to detect loading fraction
-
-        Returns:
-            loading_fraction (float): How full the trench is, normal
-            values are between usually 0.3 and 0.75
-
-        """
-        # Get trench mask
-        trench_mask = self.detect_trenches(img)
-        # Find black regions
-        loaded = (img < sk.filters.threshold_otsu(img)) * trench_mask
-        # Find total area
-        denom = np.sum(trench_mask)
-        if denom == 0:
-            return 0
-        else:
-            return np.sum(loaded)/denom
-    
-    def measure_trench_loading(self, trench_array_list):
-        """ Measure trench loadings for a list of kymographs
-
-        Args:
-            trench_array_list(numpy.ndarray, int): tr x t x y x x array of kymograph images
-        Returns:
-            trench_loadings (numpy.ndarray, float): tr x t array of trench loading
-
-        """
-        trench_loadings = np.empty((trench_array_list.shape[0], trench_array_list.shape[1]))
-        for tr in range(trench_array_list.shape[0]):
-            for t in range(trench_array_list.shape[1]):
-                trench_loadings[tr, t] = self.get_trench_loading_fraction(trench_array_list[tr, t, :, :])
-        trench_loadings = trench_loadings.flatten()
-        return trench_loadings
 
 class fluo_segmentation:
     def __init__(self,scale_timepoints=False,scaling_percentage=0.9,smooth_sigma=0.75,bit_max=0,wrap_pad=3,hess_pad=6,min_obj_size=30,cell_mask_method='global',global_threshold=1000,\
@@ -732,7 +296,455 @@ class fluo_segmentation_cluster(fluo_segmentation):
             
             future = dask_controller.daskclient.submit(self.generate_segmentation,file_idx,retries=1,priority=priority)
             dask_controller.futures["Segmentation: " + str(file_idx)] = future
-            
+
+
+class phase_segmentation:
+    """ Segmentation algorithm for high mag phase images
+
+    Attributes:
+        init_niblack_k (float): k parameter for niblack thresholding of cells
+        maxima_niblack_k (float): k parameter for more rigorous thresholding to determine
+                        watershed seeds
+        init_smooth_sigma (float): smoothing value for cell segmentation
+        maxima_smooth_sigma (float): smoothing value for seed segmentation
+        maxima_niblack_window_size (int): window size for niblack thresholding of seeds
+        init_niblack_window_size (int): window size for niblack thresholding of cells
+        min_cell_size (int): throw out mask regions smaller than this size
+        deviation_from_median (float): Relative deviation from median cell size for outlier
+                                detection
+        max_perc_contrast (float): Histogram percentile above which we cap intensities
+                                (makes thresholding more robust)
+        wrap_pad (int):
+
+    """
+    def __init__(self, init_niblack_k=-0.5, maxima_niblack_k=-0.55, init_smooth_sigma=4, maxima_smooth_sigma=4, init_niblack_window_size=13, maxima_niblack_window_size=13, min_cell_size=150, deviation_from_median=0.3, max_perc_contrast=97, wrap_pad = 0):
+        
+        self.init_niblack_k = -init_niblack_k
+        self.maxima_niblack_k = -maxima_niblack_k
+        self.init_smooth_sigma = init_smooth_sigma
+        self.maxima_smooth_sigma = maxima_smooth_sigma
+        self.maxima_niblack_window_size = maxima_niblack_window_size
+        self.init_niblack_window_size = init_niblack_window_size
+        self.min_cell_size = min_cell_size
+        self.deviation_from_median = deviation_from_median
+        self.max_perc_contrast= max_perc_contrast
+        self.wrap_pad = 0
+        
+    def remove_large_objects(self, conn_comp, max_size=4000):
+        """ Remove segmented regions that are too large
+
+        Args:
+            conn_comp(numpy.ndarray, int): Segmented connected components where each
+                                        component is numbered
+            max_size(int): Throw out regions where area is greater than this
+
+        Returns:
+            out(numpy.ndarray, int): Connected components array with large regions
+                                    removed
+        """
+        out = np.copy(conn_comp)
+        component_sizes = np.bincount(conn_comp.ravel())
+        too_big = component_sizes > max_size
+        too_big_mask = too_big[conn_comp]
+        out[too_big_mask] = 0
+        return out
+    
+    def to_8bit(self,img_arr,bit_max=None):
+        """ Rescale image and convert to 8bit
+
+        Args:
+            img_arr(numpy.ndarray, int): input image to be rescaled
+            bit_max(int): maximum value for intensities
+        Returns:
+            norm_byte_array(numpy.ndarray, int): 8-bit image
+
+        """
+        # Set maximum value
+        img_max = np.max(img_arr)+0.0001
+        if bit_max is None:
+            max_val = img_max
+        else:
+            max_val = max(img_max,bit_max)
+        # Set minimum value
+        min_val = np.min(img_arr)
+        # Scale
+        norm_array = (img_arr-min_val)/(max_val-min_val)
+        # Cast as 8bit image
+        norm_byte_array = sk.img_as_ubyte(norm_array)
+        return norm_byte_array
+    
+    def preprocess_img(self,img_arr,sigma=1.,bit_max=0):
+        """ Convert image stack to 8bit and smooth with gaussian filter
+
+        Args:
+            img_arr(numpy.ndarray, int): input image stack (t x y x x)
+            sigma(float): 
+            bit_max(int): maximum value for intensities
+        Returns:
+            img_smooth(numpy.ndarray, int): smoothed 8-bit image stack (t x y x x)
+        """
+        img_smooth = copy.copy(img_arr)
+        for t in range(img_arr.shape[0]):
+            img_smooth[t] = self.to_8bit(sk.filters.gaussian(img_arr[t],sigma=sigma,preserve_range=True,mode='reflect'),bit_max=bit_max)
+        return img_smooth
+    
+    def detect_rough_trenches(self, img, show_plots=False):
+        """ Get rough estimate of where the trench is using otsu thresholding
+
+        Args:
+            img (numpy.ndarray, int): Kymograph image to segment
+            show_plots (bool): Whether to display the segmentation steps
+        Returns:
+            trench_masks (numpy.ndarray, bool): Rough estimates of trench masks
+        """
+
+        # Fill holes using morphologicla reconstruction
+        def fill_holes(img):
+            seed = np.copy(img)
+            seed[1:-1, 1:-1] = img.max()
+            strel = sk.morphology.square(3, dtype=bool)
+            img_filled = sk.morphology.reconstruction(seed, img, selem=strel, method='erosion')
+            img_filled = img_filled.astype(bool)
+            return img_filled
+    
+        # Throw out intensity outliers
+        max_val = np.percentile(img,self.max_perc_contrast)
+        img_contrast = sk.exposure.rescale_intensity(img, in_range=(0,max_val))
+        
+        # Median filter to remove speckle
+#         img_median = mh.median_filter(img_contrast,Bc=np.ones((2,2)))
+        
+        img_median = sk.filters.median(img_contrast,mask=np.ones((2,2)))
+        
+        pad_size = 6
+        img_median = np.pad(img_median, ((0, 0), (pad_size, pad_size)), "minimum")
+        # Edge detection (will pick up trench edges and cell edges)
+        img_edges = sk.filters.sobel(img_median)
+
+        # Otsu threshold the edges
+        T_otsu = sk.filters.threshold_otsu(img_edges)
+        img_otsu = (img_edges > T_otsu).astype(bool)
+        dilation_kernel = np.array([0]*20 + [1]*21)[:, None]
+        img_dilate = morph.binary_dilation(img_otsu, structure=dilation_kernel, iterations=3)
+        img_filled = fill_holes(img_dilate)
+        img_opened = morph.binary_opening(img_filled, structure = np.ones((1,5)),iterations=1)
+        img_closed = morph.binary_closing(img_opened, structure = np.ones((3,3)),iterations=6)
+        img_drop_filled = morph.binary_dilation(img_closed,structure=dilation_kernel, iterations=5)
+        
+        
+
+#         # Close gaps in between
+#         img_close = morph.binary_closing(img_otsu, structure = np.ones((3,3)),iterations=6)
+#         img_close = img_close[3:-3, 3:-3]
+
+        # Fill holes, remove small particles, and join the bulk of the trench
+#         img_filled = fill_holes(img_otsu)
+#         img_open = morph.binary_opening(img_filled, structure = np.ones((3,3)),iterations=2)
+        trench_masks = morph.binary_erosion(img_drop_filled, structure = np.ones((1,3)),iterations=3)[:, pad_size:-pad_size]
+        
+        # Display plots if needed
+        if show_plots:        
+            _, (ax1, ax2, ax3, ax4, ax5, ax6, ax7, ax8, ax9) = plt.subplots(1, 9, figsize=(14,10))
+            ax1.imshow(img)
+            ax1.set_title("Original Image")
+            ax2.imshow(img_edges)
+            ax2.set_title("Edge detection")
+            ax3.imshow(img_otsu)
+            ax3.set_title("Thresholding")
+            ax4.imshow(img_dilate)
+            ax4.set_title("Drop fill 1")
+            ax5.imshow(img_filled)
+            ax5.set_title("Fill Holes")
+            ax6.imshow(img_opened)
+            ax6.set_title("Horizontal Opening")
+            ax7.imshow(img_closed)
+            ax7.set_title("Image closing")
+            ax8.imshow(img_drop_filled)
+            ax8.set_title("Drop fill 2")
+            ax9.imshow(trench_masks)
+            ax9.set_title("Final mask")
+        return trench_masks
+
+    def detect_trenches(self, img, show_plots=False):
+        """ Fully detect trenches in a kymograph image
+
+        Args:
+            img (numpy.ndarray, int): Kymograph image to segment
+            show_plots (bool): Whether to display the segmentation steps
+        Returns:
+            trench_masks (numpy.ndarray, bool): Rough estimates of trench masks
+        """
+        # Detect rough areas
+        trench_masks = self.detect_rough_trenches(img, show_plots)
+        # Erode to account for oversegmentation
+        trench_masks = morph.binary_erosion(trench_masks,structure=np.ones((1,3)),iterations=3)
+        trench_masks = morph.binary_erosion(trench_masks,structure=np.ones((3,1)),iterations=1)
+        # Find regions in the mask
+        conn_comp = sk.measure.label(trench_masks,neighbors=4)
+        rp_area = [r.area for r in sk.measure.regionprops(conn_comp, cache=False)]
+        # Select the largest region as the trench mask
+        if len(rp_area) > 0:
+            max_region = np.argmax(rp_area)+1
+            trench_masks[conn_comp != max_region] = 0
+        return trench_masks
+    
+    def medianFilter(self, img):
+        """ Median filter helper function
+        """
+#         img_median = mh.median_filter(img,Bc=np.ones((3,3)))
+        img_median = sk.filters.median(img,mask=np.ones((3,3)))
+        return img_median
+    
+    def findCellsInTrenches(self, img, mask,sigma,window_size,niblack_k):
+        """ Segment cell regions (not separated yet by watershedding) in a trench
+
+        Args:
+            img (numpy.ndarray, int): image
+            mask (numpy.ndarray, bool): trench mask
+            sigma (float): Gaussian filter kernel size
+            window_size (int): Size of niblack filter
+            niblack_k (float): K parameter for niblack filtering (higher is more rigorous)
+        Returns:
+            threshed (numpy.ndarray, bool): Mask for cell regions
+
+        """
+        img_smooth = img
+        # Smooth the image
+        if sigma > 0:    
+            img_smooth = sk.filters.gaussian(img,sigma=sigma,preserve_range=True,mode='reflect')
+
+        # Apply Niblack threshold to identify white regions
+        thresh_niblack = sk.filters.threshold_niblack(img_smooth, window_size = window_size, k= niblack_k)
+        
+        # Look for black regions (cells dark under phase)
+        threshed = (img <= thresh_niblack).astype(bool)
+        
+        # Apply trench mask
+        if mask is not None:
+            threshed = threshed*mask
+        return threshed
+    
+    def findWatershedMaxima(self, img,mask):
+        """ Find watershed seeds using rigorous niblack threshold
+        Args:
+            img (numpy.ndarray, int): image
+            mask (numpy.ndarray, bool): trench mask
+        Returns:
+            maxima (numpy.ndarray, bool): Mask for watershed seeds
+        """
+        maxima = self.findCellsInTrenches(img,mask,self.maxima_smooth_sigma,self.maxima_niblack_window_size,self.maxima_niblack_k)
+        img_edges = sk.filters.sobel(img)
+
+        # Otsu threshold the edges
+        T_otsu = sk.filters.threshold_otsu(img_edges)
+        img_otsu = (img_edges > T_otsu*0.7).astype(bool)*mask
+        img_otsu = morph.binary_dilation(img_otsu, np.ones((3,3)))
+        maxima = maxima*(~img_otsu)
+        reg_props = sk.measure.regionprops(sk.measure.label(maxima,neighbors=4), cache=False)
+        rp_area = [r.area for r in reg_props]
+        # Throw out maxima regions that are too small
+        med_size = np.median(rp_area)
+        cutoff_size = int(max(0,med_size/6))
+        maxima = sk.morphology.remove_small_objects(maxima,min_size=cutoff_size)
+        return maxima
+
+    def findWatershedMask(self, img,mask):
+        """ Find cell regions to watershed using less rigorous niblack threshold
+        Args:
+            img (numpy.ndarray, int): image
+            mask (numpy.ndarray, bool): trench mask
+        Returns:
+            img_mask (numpy.ndarray, bool): Mask for cell regions
+        """
+        img_mask = self.findCellsInTrenches(img,mask,self.init_smooth_sigma,self.init_niblack_window_size,self.init_niblack_k)
+        
+        img_mask = sk.morphology.binary_dilation(img_mask)
+        img_mask = sk.morphology.binary_dilation(img_mask,selem==np.ones((1,3),dtype=np.bool)  
+#         img_mask = mh.dilate(mh.dilate(img_mask),Bc=np.ones((1,3),dtype=np.bool))
+        
+        img_mask = sk.morphology.remove_small_objects(img_mask,min_size=4)
+        return img_mask
+
+    def extract_connected_components_phase(self, threshed, maxima, return_all = False, show_plots=False):
+
+        """
+        phase segmentation and connected components detection algorithm
+
+        :param img: numpy array containing image
+        :param trench_masks: you can supply your own trench_mask rather than computing it each time
+        :param flip_trenches: if mothers are on bottom of image set to True
+        :param cut_from_bottom: how far to crop the bottom of the detected trenches to avoid impacting segmentation
+        :param above_trench_pad: how muching padding above the mother cell
+        :param init_smooth_sigma: how much smoothing to apply to the image for the initial niblack segmentation
+        :param init_niblack_window_size: size of niblack window for segmentation
+        :param init_niblack_k: k-offset for initial niblack segmentation
+        :param maxima_smooth_sigma: how much smoothing to use for image that determines maxima used to seed watershed
+        :param maxima_niblack_window_size: size of niblack window for maxima determination
+        :param maxima_niblack_k: k-offset for maxima determination using niblack
+        :param min_cell_size: minimum size of cell in pixels
+        :param max_perc_contrast: scale contrast before median filter application
+        :param return_all: whether just the connected component or the connected component, 
+        thresholded image pre-watershed and maxima used in watershed
+        :return: 
+            if return_all = False: a connected component matrix
+            if return_all = True: connected component matrix, 
+            thresholded image pre-watershed and maxima used in watershed
+
+        """
+
+        # Get distance transforms
+#         distances = mh.stretch(mh.distance(threshed))
+        distances = sp.ndimage.distance_transform_edt(threshed)
+        distances = sk.exposure.rescale_intensity(distances)
+        # Label seeds
+        spots, n_spots = mh.label(maxima,Bc=np.ones((3,3)))
+        surface = (distances.max() - distances)
+        # Watershed
+        conn_comp = sk.morphology.watershed(surface, spots, mask=threshed)
+        # Label connected components
+        conn_comp = sk.measure.label(conn_comp,neighbors=4)
+        conn_comp = sk.morphology.remove_small_objects(conn_comp,min_size=self.min_cell_size)
+        
+        if show_plots:        
+            fig2, (ax1, ax2, ax3, ax4) = plt.subplots(1, 4, figsize=(5,10))
+            ax1.imshow(distances)
+            ax2.imshow(maxima)
+            ax3.imshow(spots)
+            ax4.imshow(conn_comp)
+        return conn_comp
+        
+    def segment(self, img, return_all=False, show_plots=False):
+        """ Run segmentation for a single image
+
+        Args:
+            img (numpy.ndarray, int): image
+            return_all (bool): Whether to return intermediate masks in adition
+                            to final connected components
+            show_plots (bool): Whether to show plots 
+        Returns:
+            conn_comp (numpy.ndarray, int): Mask of segmented cells, each cell
+                                        has a different numbered label
+            trench_masks (numpy.ndarray, bool): Mask of trench regions
+            img_mask (numpy.ndarray, bool): Cells pre-watershedding
+            maxima (numpy.ndarray, bool): Watershed seeds
+        """
+        trench_masks = self.detect_trenches(img, show_plots)
+        img_median = mh.median_filter(img,Bc=np.ones((3,3)))
+        img_mask = self.findWatershedMask(img_median,trench_masks)
+        maxima = self.findWatershedMaxima(img_median,img_mask)
+        conn_comp = self.extract_connected_components_phase(img_mask, maxima, show_plots=show_plots)
+        
+        if return_all:
+            return conn_comp, trench_masks, img_mask, maxima
+        else:
+            return conn_comp
+    
+    def find_trench_masks_and_median_filtered_list(self, trench_array_list):
+        """ Find trench masks and median filtered images for a list of individual kymographs
+
+        Args:
+            trench_array_list (list): List of numpy.ndarray (t x y x x) representing each
+                                    kymograph
+        Returns:
+            trench_masks_list (list): List of boolean masks for the identified trenches
+            img_medians_list (list): List of median-filtered images
+        """
+        trench_masks_list = np.empty_like(trench_array_list, dtype=bool)
+        img_medians_list = np.empty_like(trench_array_list, dtype=np.uint8)
+        for tr in range(trench_array_list.shape[0]):
+            for t in range(trench_array_list.shape[1]):
+                trench_masks_list[tr,t,:,:] = self.detect_trenches(trench_array_list[tr,t,:,:])
+                img_medians_list[tr,t,:,:] = self.medianFilter(trench_array_list[tr,t,:,:])
+        return trench_masks_list, img_medians_list
+    
+    def find_watershed_mask_list(self, trench_mask_and_median_filtered_list):
+        """ Find cell regions pre-watershed for a list of kymographs
+
+        Args:
+            trench_mask_and_median_filtered_list (list):
+                Lists of boolean masks for trenches, and median-filtered images
+        Returns:
+            watershed_masks_list (list): List of boolean masks for cell regions
+            img_array_list (list): List of median-filtered images
+        """
+        trench_mask_array_list, img_array_list = trench_mask_and_median_filtered_list
+        watershed_masks_list = np.empty_like(img_array_list, dtype=bool)
+        for tr in range(img_array_list.shape[0]):
+            for t in range(img_array_list.shape[1]):
+                watershed_masks_list[tr,t,:,:] = self.findWatershedMask(img_array_list[tr,t,:,:], trench_mask_array_list[tr,t,:,:])
+        return watershed_masks_list, img_array_list
+        
+    def find_watershed_maxima_list(self, watershed_mask_and_median_filtered_list):
+        """ Find watershed seeds for a list of kymographs
+
+        Args:
+            watershed_mask_and_median_filtered_list (list):
+                Lists of boolean masks for cell regions, and median-filtered images
+        Returns:
+            watershed_maxima_list (list): List of boolean masks for watershed seeds
+            masks_list (list): List of boolean masks for cell regions
+        """
+        masks_list, img_array_list = watershed_mask_and_median_filtered_list
+        watershed_maxima_list = np.empty_like(img_array_list, dtype=bool)
+        for tr in range(img_array_list.shape[0]):
+            for t in range(img_array_list.shape[1]):
+                watershed_maxima_list[tr,t,:,:] = self.findWatershedMaxima(img_array_list[tr,t,:,:], masks_list[tr,t,:,:])
+        return watershed_maxima_list, masks_list
+    
+    def find_conn_comp_list(self, watershed_maxima_and_masks_list): #masks_arr is tr,t,y,x
+        """ Watershed cells and return final segmentations for a list of kymoraphs
+
+        Args:
+            watershed_maxima_and_masks_list (list):
+                Lists of boolean masks for watershed seeds and for cell regions
+        Returns:
+            watershed_maxima_list (list): List of boolean masks for watershed seeds
+            masks_list (list): List of boolean masks for cell regions
+        """
+        maxima_list, masks_list = watershed_maxima_and_masks_list
+        final_masks_list = np.empty_like(masks_list, dtype=np.uint8)
+        for tr in range(masks_list.shape[0]):
+            for t in range(masks_list.shape[1]):
+                final_masks_list[tr,t,:,:] = self.extract_connected_components_phase(masks_list[tr,t,:,:], maxima_list[tr,t,:,:])
+        return final_masks_list
+    
+    def get_trench_loading_fraction(self, img):
+        """ Calculate loading fraction, basically how much of the trench mask is filled with black stuff
+
+        Args:
+            img (numpy.ndarray): Image to detect loading fraction
+
+        Returns:
+            loading_fraction (float): How full the trench is, normal
+            values are between usually 0.3 and 0.75
+
+        """
+        # Get trench mask
+        trench_mask = self.detect_trenches(img)
+        # Find black regions
+        loaded = (img < sk.filters.threshold_otsu(img)) * trench_mask
+        # Find total area
+        denom = np.sum(trench_mask)
+        if denom == 0:
+            return 0
+        else:
+            return np.sum(loaded)/denom
+    
+    def measure_trench_loading(self, trench_array_list):
+        """ Measure trench loadings for a list of kymographs
+
+        Args:
+            trench_array_list(numpy.ndarray, int): tr x t x y x x array of kymograph images
+        Returns:
+            trench_loadings (numpy.ndarray, float): tr x t array of trench loading
+
+        """
+        trench_loadings = np.empty((trench_array_list.shape[0], trench_array_list.shape[1]))
+        for tr in range(trench_array_list.shape[0]):
+            for t in range(trench_array_list.shape[1]):
+                trench_loadings[tr, t] = self.get_trench_loading_fraction(trench_array_list[tr, t, :, :])
+        trench_loadings = trench_loadings.flatten()
+        return trench_loadings
     
 class phase_segmentation_cluster(phase_segmentation):
     """ Class for handling cell segmentation and extraction of morphological
