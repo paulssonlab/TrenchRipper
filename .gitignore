@@ -1,0 +1,7 @@
+*.out
+*.dirlock
+*.pyc
+**/.ipynb_checkpoints
+*.log
+*.tif
+*.tiff

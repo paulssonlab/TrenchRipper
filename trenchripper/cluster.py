@@ -44,6 +44,7 @@ class dask_controller: #adapted from Charles' code
         self.daskclient.restart()
         if not self.local:
             self.daskcluster.stop_all_jobs()
+            self.daskcluster.close()
         for item in os.listdir(self.working_directory):
             if "worker-" in item or "slurm-" in item or ".lock" in item:
                 path = "./" + item

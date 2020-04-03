@@ -214,6 +214,8 @@ class nd_metadata_handler:
     def get_metadata(self):
         nd2file = ND2Reader(self.nd2filename)
         exp_metadata = copy.copy(nd2file.metadata)
+        wanted_keys = ['height', 'width', 'date', 'fields_of_view', 'frames', 'z_levels', 'total_images_per_channel', 'channels', 'pixel_microns', 'num_frames', 'experiment']
+        exp_metadata = dict([(k, exp_metadata[k]) for k in wanted_keys if k in exp_metadata])
         exp_metadata["num_fovs"] = len(exp_metadata['fields_of_view'])
         exp_metadata["settings"] = self.get_imaging_settings(nd2file)
         if not self.ignore_fovmetadata:
