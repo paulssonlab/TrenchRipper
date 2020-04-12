@@ -1,9 +1,7 @@
 import cv2
+import os
 import numpy as np
 import matplotlib.pyplot as plt
-import os
-import skimage.io as io
-from sklearn import linear_model
 from skimage.util import pad
 
 def find_seed_image(image_stack, max_poi_std=5):

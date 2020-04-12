@@ -6,7 +6,6 @@ import os
 import copy
 import pickle
 import shutil
-import cv2
 import pandas as pd
 
 from skimage import measure,feature,segmentation,future,util,morphology,filters,exposure
@@ -14,7 +13,7 @@ from .utils import kymo_handle,pandas_hdf5_handler,writedir
 from .cluster import hdf5lock
 from time import sleep
 import scipy.ndimage.morphology as morph
-import mahotas as mh
+# import mahotas as mh
 from dask.distributed import worker_client
 from pandas import HDFStore
 
@@ -559,9 +558,8 @@ class phase_segmentation:
         img_mask = self.findCellsInTrenches(img,mask,self.init_smooth_sigma,self.init_niblack_window_size,self.init_niblack_k)
         
         img_mask = sk.morphology.binary_dilation(img_mask)
-        img_mask = sk.morphology.binary_dilation(img_mask,selem==np.ones((1,3),dtype=np.bool)  
+        img_mask = sk.morphology.binary_dilation(img_mask,selem==np.ones((1,3),dtype=np.bool))  
 #         img_mask = mh.dilate(mh.dilate(img_mask),Bc=np.ones((1,3),dtype=np.bool))
-        
         img_mask = sk.morphology.remove_small_objects(img_mask,min_size=4)
         return img_mask
 
@@ -597,7 +595,8 @@ class phase_segmentation:
         distances = sp.ndimage.distance_transform_edt(threshed)
         distances = sk.exposure.rescale_intensity(distances)
         # Label seeds
-        spots, n_spots = mh.label(maxima,Bc=np.ones((3,3)))
+        spots = sk.measure.label(maxima,neighbors=4)             
+#         spots, _ = mh.label(maxima,Bc=np.ones((3,3)))
         surface = (distances.max() - distances)
         # Watershed
         conn_comp = sk.morphology.watershed(surface, spots, mask=threshed)
@@ -629,7 +628,8 @@ class phase_segmentation:
             maxima (numpy.ndarray, bool): Watershed seeds
         """
         trench_masks = self.detect_trenches(img, show_plots)
-        img_median = mh.median_filter(img,Bc=np.ones((3,3)))
+#         img_median = mh.median_filter(img,Bc=np.ones((3,3)))
+        img_median = sk.filters.median(img,mask=np.ones((3,3)))
         img_mask = self.findWatershedMask(img_median,trench_masks)
         maxima = self.findWatershedMaxima(img_median,img_mask)
         conn_comp = self.extract_connected_components_phase(img_mask, maxima, show_plots=show_plots)
