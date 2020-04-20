@@ -572,7 +572,7 @@ class tracking_solver:
     def define_tracking_problem(self,Cij,Cik,Cki,posij,posik,poski,sizes,merge_per_iter,edge_limit):
 
         prob = LpProblem("Lineage",LpMinimize)
-
+        
         Aij = {}
         Aik = {}
         Aki = {}
@@ -580,10 +580,28 @@ class tracking_solver:
 
         obj_fn_terms = []
         obj_fn_coeff = []
-
+        
+        valid_j_list = []
+        
         for t in range(len(Cij)):
             cij = Cij[t]
             
+            Aij[t] = {"ij":{}, "ji":{}}
+            Aik[t] = {"ik":{}, "ki":{}}
+            Aki[t] = {"ki":{}, "ik":{}}
+            
+            for i in range(cij.shape[0]):
+                Aij[t]["ij"][i] = {}
+                Aik[t]["ik"][i] = {}
+                if i < (cij.shape[0]-1):
+                    Aki[t]["ki"][i] = {}
+                
+            for j in range(cij.shape[1]):
+                Aij[t]["ji"][j] = {}
+                Aki[t]["ik"][j] = {}
+                if j < (cij.shape[1]-1):
+                    Aik[t]["ki"][j] = {}
+                        
             working_posij = posij[t]    
             working_posik = posik[t]    
             working_poski = poski[t]
@@ -593,29 +611,36 @@ class tracking_solver:
             valid_poski = np.argsort(-working_poski,axis=1)[:,:edge_limit]
 
             for i in range(cij.shape[0]):
+                                
                 valid_posij_slice = valid_posij[i]
                 for j in range(cij.shape[1]):
                     if j >= i:
                         if j in valid_posij_slice:
-                            Aij[(i,j,t)] = LpVariable("ai="+str(i)+",j="+str(j)+",t="+str(t),0,1,cat='Continuous')
+                            var = LpVariable("ai="+str(i)+",j="+str(j)+",t="+str(t),0,1,cat='Continuous')
+                            Aij[t]["ij"][i][j] = var
+                            Aij[t]["ji"][j][i] = var                            
                             cijt = cij[i,j]
-                            obj_fn_terms.append(Aij[(i,j,t)])
+                            obj_fn_terms.append(var)
                             obj_fn_coeff.append(cijt)
 
                         if j < (cij.shape[1]-1):
                             valid_posik_slice = valid_posik[i]
-                            if j in valid_posik_slice:                            
-                                Aik[(i,j,t)] = LpVariable("ai="+str(i)+",k="+str(j)+",t="+str(t),0,1,cat='Continuous')
+                            if j in valid_posik_slice:
+                                var = LpVariable("ai="+str(i)+",k="+str(j)+",t="+str(t),0,1,cat='Continuous')
+                                Aik[t]["ik"][i][j] = var
+                                Aik[t]["ki"][j][i] = var
                                 cikt = Cik[t][i,j]
-                                obj_fn_terms.append(Aik[(i,j,t)])
+                                obj_fn_terms.append(var)
                                 obj_fn_coeff.append(cikt)
 
                         if i < (cij.shape[0]-1):
                             valid_poski_slice = valid_poski[i]
                             if j in valid_poski_slice:                            
-                                Aki[(i,j,t)] = LpVariable("ak="+str(i)+",i="+str(j)+",t="+str(t),0,1,cat='Continuous')
+                                var = LpVariable("ak="+str(i)+",i="+str(j)+",t="+str(t),0,1,cat='Continuous')
+                                Aki[t]["ki"][i][j] = var
+                                Aki[t]["ik"][j][i] = var
                                 ckit = Cki[t][i,j]
-                                obj_fn_terms.append(Aki[(i,j,t)])
+                                obj_fn_terms.append(var)
                                 obj_fn_coeff.append(ckit)
 
                 Ai[(i,t)] = LpVariable("ai="+str(i)+",t="+str(t),0,1,cat='Continuous')     
@@ -624,19 +649,17 @@ class tracking_solver:
 
         prob += lpSum([obj_fn_coeff[n]*obj_fn_term for n,obj_fn_term in enumerate(obj_fn_terms)]), "Objective Function"
         
-        
         for t in range(0,len(sizes)):
             if t == 0:
                 N_detect = len(sizes[t])
-
+                
                 for j in range(N_detect):
-                    neg_Aij = [key for key in Aij.keys() if (key[0] == j) and (key[2] == t)]
-                    neg_Aik = [key for key in Aik.keys() if (key[0] == j) and (key[2] == t)]
-                    neg_Aki = [key for key in Aki.keys() if (key[0] == j-1) and (key[2] == t)] +\
-                    [key for key in Aki.keys() if (key[0] == j) and (key[2] == t)]
+                    neg_Aij = list(Aij[t]["ij"].get(j,{}).values())
+                    neg_Aik = list(Aik[t]["ik"].get(j,{}).values())
+                    neg_Aki = list(Aki[t]["ki"].get(j-1,{}).values()) + list(Aki[t]["ki"].get(j,{}).values())
                     neg_Ai = Ai[(j,t)]
 
-                    prob += sum([Aij[key] for key in neg_Aij]) + sum([Aik[key] for key in neg_Aik]) + sum([Aki[key] for key in neg_Aki]) + neg_Ai <= 1,\
+                    prob += lpSum(neg_Aij) + lpSum(neg_Aik) + lpSum(neg_Aki) + neg_Ai <= 1,\
                     "Constraint 7 (" + str(t) + "," + str(j) + ")"
 
             elif t < len(sizes)-1:
@@ -644,79 +667,68 @@ class tracking_solver:
                 N_detect_f = len(sizes[t])
 
                 for j in range(N_detect_f):
-                    pos_Aij = [key for key in Aij.keys() if key[1:] == (j,t-1)]
-                    pos_Aik = [key for key in Aik.keys() if key[1:] == (j-1,t-1)] +\
-                    [key for key in Aik.keys() if key[1:] == (j,t-1)]
-                    pos_Aki = [key for key in Aki.keys() if key[1:] == (j,t-1)]
-
-                    neg_Aij = [key for key in Aij.keys() if (key[0] == j) and (key[2] == t)]
-                    neg_Aik = [key for key in Aik.keys() if (key[0] == j) and (key[2] == t)]
-                    neg_Aki = [key for key in Aki.keys() if (key[0] == j-1) and (key[2] == t)] +\
-                    [key for key in Aki.keys() if (key[0] == j) and (key[2] == t)]
-                    neg_Ai = Ai[(j,t)]
-
-                    if j == N_detect_f - 1:
-
-                        prob += sum([Aij[key] for key in pos_Aij]) + sum([Aik[key] for key in pos_Aik]) + sum([Aki[key] for key in pos_Aki]) - \
-                        sum([Aij[key] for key in neg_Aij]) - sum([Aik[key] for key in neg_Aik]) - sum([Aki[key] for key in neg_Aki]) - neg_Ai == 0,\
+                    pos_Aij = list(Aij[t-1]["ji"].get(j,{}).values())                    
+                    pos_Aik = list(Aik[t-1]["ki"].get(j-1,{}).values()) + list(Aik[t-1]["ki"].get(j,{}).values())
+                    pos_Aki = list(Aki[t-1]["ik"].get(j,{}).values())
+                    
+                    
+                    neg_Aij = list(Aij[t]["ij"].get(j,{}).values())
+                    neg_Aik = list(Aik[t]["ik"].get(j,{}).values())
+                    neg_Aki = list(Aki[t]["ki"].get(j-1,{}).values()) + list(Aki[t]["ki"].get(j,{}).values())
+                    neg_Ai = Ai[(j,t)]                
+                    
+                    prob += lpSum(pos_Aij) + lpSum(pos_Aik) + lpSum(pos_Aki) - \
+                        lpSum(neg_Aij) - lpSum(neg_Aik) - lpSum(neg_Aki) - neg_Ai == 0,\
                         "Constraint 9 (" + str(t) + "," + str(j) + ")"
 
-                        prob += sum([Aij[key] for key in pos_Aij]) + sum([Aik[key] for key in pos_Aik]) + sum([Aki[key] for key in pos_Aki]) <= 1,\
-                        "Constraint 6 (" + str(t) + "," + str(j) + ")"
+                    prob += lpSum(pos_Aij) + lpSum(pos_Aik) + lpSum(pos_Aki) <= 1,\
+                    "Constraint 6 (" + str(t) + "," + str(j) + ")"
 
-                        prob += sum([Aij[key] for key in neg_Aij]) + sum([Aik[key] for key in neg_Aik]) + sum([Aki[key] for key in neg_Aki]) + neg_Ai <= 1,\
+                    prob += lpSum(neg_Aij) + lpSum(neg_Aik) + lpSum(neg_Aki) + neg_Ai <= 1,\
                         "Constraint 7 (" + str(t) + "," + str(j) + ")"
 
-                    else:
-
-                        prob += sum([Aij[key] for key in pos_Aij]) + sum([Aik[key] for key in pos_Aik]) + sum([Aki[key] for key in pos_Aki]) - \
-                        sum([Aij[key] for key in neg_Aij]) - sum([Aik[key] for key in neg_Aik]) - sum([Aki[key] for key in neg_Aki]) - neg_Ai == 0,\
-                        "Constraint 9 (" + str(t) + "," + str(j) + ")"
-
-                        prob += sum([Aij[key] for key in pos_Aij]) + sum([Aik[key] for key in pos_Aik]) + sum([Aki[key] for key in pos_Aki]) <= 1,\
-                        "Constraint 6 (" + str(t) + "," + str(j) + ")"
-
-                        prob += sum([Aij[key] for key in neg_Aij]) + sum([Aik[key] for key in neg_Aik]) + sum([Aki[key] for key in neg_Aki]) + neg_Ai <= 1,\
-                        "Constraint 7 (" + str(t) + "," + str(j) + ")"
+                    if j != N_detect_f - 1:
 
                         i_above = list(range(j+1,N_detect_f))
 
                         above_Aij = []
                         above_Aik = []
-                        above_Aki = [key for key in Aki.keys() if (key[0] == j) and (key[2] == t)]
+                        above_Aki = list(Aki[t]["ki"].get(j,{}).values())
                         above_Ai = []
-                        for i in i_above:
-                            above_Aij += [key for key in Aij.keys() if (key[0] == i) and (key[2] == t)]
-                            above_Aik += [key for key in Aik.keys() if (key[0] == i) and (key[2] == t)]
-                            above_Aki += [key for key in Aki.keys() if (key[0] == i) and (key[2] == t)]
+                        for i in i_above:                            
+                            above_Aij += list(Aij[t]["ij"].get(i,{}).values())
+                            above_Aik += list(Aik[t]["ik"].get(i,{}).values())
+                            above_Aki += list(Aki[t]["ki"].get(i,{}).values())
                             above_Ai.append((i,t))
 
-
-                        prob += N_detect_f*neg_Ai + sum([Aij[key] for key in above_Aij]) + \
-                        sum([Aik[key] for key in above_Aik]) + sum([Aki[key] for key in above_Aki]) <= N_detect_f,\
+                        prob += N_detect_f*neg_Ai + lpSum(above_Aij) + \
+                        lpSum(above_Aik) + lpSum(above_Aki) <= N_detect_f,\
                         "Contraint 8 (" + str(t) + "," + str(j) + ")"
 
             else:
                 N_detect = len(sizes[t])
 
                 for j in range(N_detect):
-
-                    pos_Aij = [key for key in Aij.keys() if key[1:] == (j,t-1)]
-                    pos_Aik = [key for key in Aik.keys() if key[1:] == (j-1,t-1)] +\
-                    [key for key in Aik.keys() if key[1:] == (j,t-1)]
-                    pos_Aki = [key for key in Aki.keys() if key[1:] == (j,t-1)]
+                    pos_Aij = list(Aij[t-1]["ji"].get(j,{}).values())                    
+                    pos_Aki = list(Aki[t-1]["ik"].get(j,{}).values())
+                    pos_Aik = list(Aik[t-1]["ki"].get(j-1,{}).values()) + list(Aik[t-1]["ki"].get(j,{}).values())
 
                     if j == N_detect_f - 1:
 
-                        prob += sum([Aij[key] for key in pos_Aij]) + sum([Aik[key] for key in pos_Aik]) + \
-                        sum([Aki[key] for key in pos_Aki]) <= 1, "Constraint 6 (" + str(t) + "," + str(j) + ")"
+                        prob += lpSum(pos_Aij) + lpSum(pos_Aik) + \
+                        lpSum(pos_Aki) <= 1, "Constraint 6 (" + str(t) + "," + str(j) + ")"
 
                     else:
 
-                        prob += sum([Aij[key] for key in pos_Aij]) + sum([Aik[key] for key in pos_Aik]) + \
-                        sum([Aki[key] for key in pos_Aki]) <= 1, "Constraint 6 (" + str(t) + "," + str(j) + ")"
-
-        prob += sum([value for _,value in Aki.items()]) <= merge_per_iter, "Merge Limit"
+                        prob += lpSum(pos_Aij) + lpSum(pos_Aik) + \
+                        lpSum(pos_Aki) <= 1, "Constraint 6 (" + str(t) + "," + str(j) + ")"
+        
+        all_Aki_vars = []
+        for _,tpt in Aki.items():
+            for _,subdict in tpt["ki"].items():
+                all_Aki_vars += list(subdict.values())
+                                        
+        prob += lpSum(all_Aki_vars) <= merge_per_iter, "Merge Limit"
 
         return prob,Aij,Aik,Aki,Ai
 
@@ -743,18 +755,18 @@ class tracking_solver:
                 valid_posij_slice = valid_posij[i]
                 for j in range(num_j):
                     if j >= i:
-                        if j in valid_posij_slice:
-                            Aij_arr_list[t][i,j] = bool(np.round(Aij[(i,j,t)].varValue))
+                        if j in valid_posij_slice:                            
+                            Aij_arr_list[t][i,j] = bool(np.round(Aij[t]["ij"][i][j].varValue))
 
                         if j < num_j - 1:
                             valid_posik_slice = valid_posik[i]
                             if j in valid_posik_slice:
-                                Aik_arr_list[t][i,j] = bool(np.round(Aik[(i,j,t)].varValue)) #issue here
+                                Aik_arr_list[t][i,j] = bool(np.round(Aik[t]["ik"][i][j].varValue))
 
                         if i < num_i - 1:
                             valid_poski_slice = valid_poski[i]
                             if j in valid_poski_slice:
-                                Aki_arr_list[t][i,j] = bool(np.round(Aki[(i,j,t)].varValue))
+                                Aki_arr_list[t][i,j] = bool(np.round(Aki[t]["ki"][i][j].varValue))
 
                 Ai_arr_list[t][i] = bool(np.round(Ai[(i,t)].varValue))
 
@@ -937,7 +949,7 @@ class tracking_solver:
 
         iter_outputs.append(self.run_iteration(working_labeled_data,self.merge_per_iter,self.edge_limit))
 
-        _,_,prob,_,_,Aki_arr_list,_,_ = iter_outputs[-1]
+        centroids,sizes,prob,Aij_arr_list,Aik_arr_list,Aki_arr_list,Ai_arr_list,empty_trenches = iter_outputs[-1]
         
         merged_cells = np.any([np.any(Aki_arr) for Aki_arr in Aki_arr_list])
         objective_val = value(prob.objective)
@@ -947,6 +959,10 @@ class tracking_solver:
         print("Objective = ", objective_val)
         print("Number of Active Edges = ", active_edges)
         print("Edge Normalized Objective = ", edge_normalized_objective)
+        
+        if self.merge_per_iter == 0:
+            
+            return working_labeled_data,centroids,sizes,Aij_arr_list,Aik_arr_list,Aki_arr_list,Ai_arr_list,edge_normalized_objective,empty_trenches
 
         iter_scores.append(edge_normalized_objective)
         iter_since_incr = 0
@@ -983,9 +999,9 @@ class tracking_solver:
         centroids,sizes,prob,Aij_arr_list,Aik_arr_list,Aki_arr_list,Ai_arr_list,empty_trenches = self.run_iteration(working_labeled_data,0,self.edge_limit)
         objective_val = value(prob.objective)
         active_edges = sum([v.varValue for v in prob.variables()])
-        lineage_score = objective_val/active_edges
+        edge_normalized_objective = objective_val/active_edges
 
-        return working_labeled_data,centroids,sizes,Aij_arr_list,Aik_arr_list,Aki_arr_list,Ai_arr_list,lineage_score,empty_trenches
+        return working_labeled_data,centroids,sizes,Aij_arr_list,Aik_arr_list,Aki_arr_list,Ai_arr_list,edge_normalized_objective,empty_trenches
     
     def get_nuclear_lineage(self,sizes,empty_trenches,Aik_arr_list):
         
