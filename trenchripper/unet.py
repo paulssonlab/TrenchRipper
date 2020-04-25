@@ -28,7 +28,7 @@ import torch.nn.functional as F
 import torch.optim as optim
 import numpy as np
 from .utils import pandas_hdf5_handler,kymo_handle,writedir
-from .cluster import hdf5lock,dask_controller
+from .trcluster import hdf5lock,dask_controller
 from .metrics import object_f_scores
 
 from matplotlib import pyplot as plt
@@ -499,7 +499,7 @@ class UNet_Training_DataLoader:
         
         dask_cont = dask_controller(walltime='01:00:00',local=False,n_workers=n_workers,memory=memory)
         dask_cont.startdask()
-        dask_cont.daskcluster.start_workers()
+#         dask_cont.daskcluster.start_workers()
         dask_cont.displaydashboard()
         
         try:        

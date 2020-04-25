@@ -14,13 +14,14 @@ from .utils import pandas_hdf5_handler,writedir
 from parse import compile
 
 class hdf5_fov_extractor:
-    def __init__(self,nd2filename,headpath,tpts_per_file=100,ignore_fovmetadata=False): #note this chunk size has a large role in downstream steps...make sure is less than 1 MB
+    def __init__(self,nd2filename,headpath,tpts_per_file=100,ignore_fovmetadata=False,nd2reader_override={}): #note this chunk size has a large role in downstream steps...make sure is less than 1 MB
         self.nd2filename = nd2filename
         self.headpath = headpath
         self.metapath = self.headpath + "/metadata.hdf5"
         self.hdf5path = self.headpath + "/hdf5"
         self.tpts_per_file = tpts_per_file
         self.ignore_fovmetadata = ignore_fovmetadata
+        self.nd2reader_override = nd2reader_override
                 
     def assignidx(self,expmeta,metadf=None):
         numfovs = len(expmeta["fields_of_view"])
@@ -61,12 +62,12 @@ class hdf5_fov_extractor:
                 placeholder='General experiment notes.',description='Notes:',disabled=False),)
         display(selection)
         
-    def writemetadata(self, manual_num_frames=None, manual_num_fovs=None):
-        ndmeta_handle = nd_metadata_handler(self.nd2filename,ignore_fovmetadata=self.ignore_fovmetadata)
+    def writemetadata(self):
+        ndmeta_handle = nd_metadata_handler(self.nd2filename,ignore_fovmetadata=self.ignore_fovmetadata,nd2reader_override=self.nd2reader_override)
         if self.ignore_fovmetadata:
             exp_metadata = ndmeta_handle.get_metadata()
         else:
-            exp_metadata,fov_metadata = ndmeta_handle.get_metadata(manual_num_frames=manual_num_frames, manual_num_fovs=manual_num_fovs)
+            exp_metadata,fov_metadata = ndmeta_handle.get_metadata()
         
         self.chunk_shape = (1,exp_metadata["height"],exp_metadata["width"])
         chunk_bytes = (2*np.multiply.accumulate(np.array(self.chunk_shape))[-1])
@@ -84,9 +85,11 @@ class hdf5_fov_extractor:
         
         self.meta_handle.write_df("global",assignment_metadata,metadata=exp_metadata)
                                           
-    def extract(self,dask_controller, manual_num_frames=None, manual_num_fovs=None):
+    def extract(self,dask_controller):
+                
         writedir(self.hdf5path,overwrite=True)
-        self.writemetadata(manual_num_frames=manual_num_frames, manual_num_fovs=manual_num_fovs)
+        
+        self.writemetadata()
         
         dask_controller.futures = {}
         metadf = self.meta_handle.read_df("global",read_metadata=True)
@@ -97,23 +100,18 @@ class hdf5_fov_extractor:
         
         def writehdf5(fovnum,num_entries,timepoint_list,file_idx, num_fovs):
             with ND2Reader(self.nd2filename) as nd2file:
+                for key,item in self.nd2reader_override.items():
+                    nd2file.metadata[key] = item                
                 y_dim = self.metadata['height']
                 x_dim = self.metadata['width']
                 with h5py_cache.File(self.hdf5path + "/hdf5_" + str(file_idx) + ".hdf5","w",chunk_cache_mem_size=self.chunk_cache_mem_size) as h5pyfile:
                     for i,channel in enumerate(self.metadata["channels"]):
                         hdf5_dataset = h5pyfile.create_dataset(str(channel),\
                         (num_entries,y_dim,x_dim), chunks=self.chunk_shape, dtype='uint16')
-                        # If Elements crashed nd2reader does not index into the file correctly, this is a hard fix
-                        if self.metadata["failed_file"]:
-                            for j in range(len(timepoint_list)):
-                                frame = timepoint_list[j]
-                                nd2_image = nd2file.get_frame_2D(c=i, t=0, v=fovnum+frame*num_fovs)
-                                hdf5_dataset[j,:,:] = nd2_image
-                        else:
-                            for j in range(len(timepoint_list)):
-                                frame = timepoint_list[j]
-                                nd2_image = nd2file.get_frame_2D(c=i, t=frame, v=fovnum)
-                                hdf5_dataset[j,:,:] = nd2_image
+                        for j in range(len(timepoint_list)):
+                            frame = timepoint_list[j]
+                            nd2_image = nd2file.get_frame_2D(c=i, t=frame, v=fovnum)
+                            hdf5_dataset[j,:,:] = nd2_image
             return "Done."
         
         file_list = metadf.index.get_level_values("File Index").unique().values
@@ -373,11 +371,15 @@ class tiff_fov_extractor: ###needs some work
                 nd2_image = nd2file.get_frame_2D(c=i, t=frame, v=fovnum)
                 imsave(filepath, nd2_image)
         nd2file.close()
+        
+        
+        ndmeta_handle = nd_metadata_handler(self.nd2filename,nd2reader_override=nd2reader_override)
 
 class nd_metadata_handler:
-    def __init__(self,nd2filename,ignore_fovmetadata=False):
+    def __init__(self,nd2filename,ignore_fovmetadata=False,nd2reader_override={}):
         self.nd2filename = nd2filename
         self.ignore_fovmetadata = ignore_fovmetadata
+        self.nd2reader_override = nd2reader_override
         
     def decode_unidict(self,unidict):
         outdict = {}
@@ -449,20 +451,14 @@ class nd_metadata_handler:
         
         return output
     
-    def get_metadata(self, manual_num_frames=None, manual_num_fovs=None):
+    def get_metadata(self):
         # Manual numbers are for broken .nd2 files (from when Elements crashes)
         nd2file = ND2Reader(self.nd2filename)
+        for key,item in self.nd2reader_override.items():
+            nd2file.metadata[key] = item
         exp_metadata = copy.copy(nd2file.metadata)
-        wanted_keys = ['height', 'width', 'date', 'fields_of_view', 'frames', 'z_levels', 'total_images_per_channel', 'channels', 'pixel_microns', 'num_frames', 'experiment']
+        wanted_keys = ['height', 'width', 'date', 'fields_of_view', 'frames', 'z_levels', 'z_coordinates', 'total_images_per_channel', 'channels', 'pixel_microns', 'num_frames', 'experiment']
         exp_metadata = dict([(k, exp_metadata[k]) for k in wanted_keys if k in exp_metadata])
-        exp_metadata["failed_file"] = False
-        if manual_num_frames is not None:
-            exp_metadata["frames"] = list(range(manual_num_frames))
-            exp_metadata["num_frames"] = len(exp_metadata["frames"])
-            exp_metadata["failed_file"] = True
-        if manual_num_fovs is not None:
-            exp_metadata["fields_of_view"] = list(range(manual_num_fovs))
-            exp_metadata["failed_file"] = True
         exp_metadata["num_fovs"] = len(exp_metadata['fields_of_view'])
         exp_metadata["settings"] = self.get_imaging_settings(nd2file)
         if not self.ignore_fovmetadata:

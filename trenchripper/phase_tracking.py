@@ -12,7 +12,7 @@ import pandas as pd
 import scipy.signal as signal
 import scipy.interpolate as interpolate
 from .utils import kymo_handle,pandas_hdf5_handler,writedir
-from .cluster import hdf5lock
+from .trcluster import hdf5lock
 from .DetectPeaks import detect_peaks
 from time import sleep
 from dask.distributed import worker_client

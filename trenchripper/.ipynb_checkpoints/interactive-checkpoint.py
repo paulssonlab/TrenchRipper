@@ -433,6 +433,16 @@ class fluo_segmentation_interactive(fluo_segmentation):
         self.final_params['8 Bit Maximum:'] = bit_max
         self.final_params['Scale Fluorescence?'] = scale
         self.final_params["Scaling Percentile:"] = scaling_percentile
+        
+        percentile = int(np.percentile(kymo_arr.flatten(), 99))
+        print("99th percentile:" + str(percentile))
+        fig, ax = plt.subplots(1, 1)
+        ax.hist(kymo_arr.flatten(),bins=50)
+        ax.axvline(bit_max,c="r",linewidth=3,zorder=10)
+        ax.set_title("Pixel Value Histogram w/ 8-bit Maximum",fontsize=20)
+        ax.set_xlabel("Pixel Value",fontsize=15)
+        fig.set_size_inches(9, 6)
+        fig.show()
                 
         proc_list = []
         unwrap_proc_list = []
@@ -446,9 +456,6 @@ class fluo_segmentation_interactive(fluo_segmentation):
             proc_list.append(proc_img)
             unwrap_proc_list.append(unwrap_proc)
         self.plot_img_list(unwrap_proc_list)
-        
-        plt.hist(kymo_arr.flatten(),bins=50)
-        plt.show()
         
         return proc_list
         

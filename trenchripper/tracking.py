@@ -15,7 +15,7 @@ from pulp import *
 from ipywidgets import interactive, fixed, FloatSlider, IntSlider, IntRangeSlider, SelectMultiple
 
 from .utils import pandas_hdf5_handler,writedir
-from .cluster import dask_controller
+from .trcluster import dask_controller
 
 def get_labeled_data(kymo_arr,orientation):
     labeled_data = []
@@ -59,13 +59,14 @@ def get_segment_props(labeled_data,interpolate_empty_trenches=False):
         return all_centroids,all_sizes,all_bboxes,empty_trenches
     else:
         return all_centroids,all_sizes,all_bboxes
-
+    
 class scorefn:
-    def __init__(self,headpath,segfolder,u_pos=0.2,sig_pos=0.4,u_size=0.,sig_size=0.2):
+    def __init__(self,headpath,segfolder,u_pos=0.2,sig_pos=0.4,u_size=0.,sig_size=0.2,w_merge=0.8):
         self.headpath = headpath
         self.segpath = headpath + "/" + segfolder
         self.u_pos,self.sig_pos = (u_pos,sig_pos)
         self.u_size,self.sig_size = (u_size,sig_size)
+        self.w_merge = w_merge
         self.viewpadding = 0
     
     def fpos(self,xT,xt,bbox_T,bbox_t,u_pos=0.2,sig_pos=0.4):
@@ -199,28 +200,6 @@ class scorefn:
         
         for t in range(len(posij)):
             
-            test_posij = np.isnan(np.sum(posij[t]))
-            test_sizeij = np.isnan(np.sum(sizeij[t]))
-            test_posik = np.isnan(np.sum(posik[t]))
-            test_sizeik = np.isnan(np.sum(sizeik[t]))
-            test_poski = np.isnan(np.sum(poski[t]))
-            test_sizeki = np.isnan(np.sum(sizeki[t]))
-            test_pos_e = np.isnan(np.sum(pos_e[t]))
-            test_size_e = np.isnan(np.sum(size_e[t]))
-            test_union_centroids = np.isnan(np.sum(union_centroids[t]))
-            test_union_sizes = np.isnan(np.sum(union_sizes[t]))
-            test_size_diffs = np.isnan(np.sum(size_diffs[t]))
-            
-            test_arr = [test_posij,test_sizeij,test_posik,test_sizeik,\
-                       test_poski,test_sizeki,test_pos_e,test_size_e,\
-                       test_union_centroids,test_union_sizes,test_size_diffs]
-            
-            arr_key = ["test_posij","test_sizeij","test_posik","test_sizeik",\
-                       "test_poski","test_sizeki","test_pos_e","test_size_e",\
-                       "test_union_centroids","test_union_sizes","test_size_diffs"]
-            if np.any(test_arr):
-                print(arr_key[test_arr])
-            
             f_ij = posij[t]+sizeij[t]
             f_ik = posik[t]+sizeik[t]
             f_ki = poski[t]+sizeki[t]
@@ -259,7 +238,7 @@ class scorefn:
             ik_score[ik_score<-100.] = -100.
             Cik.append(ik_score)    
         
-            ki_score = 1.8*(-log_prob_ki-100.)
+            ki_score = (1.+self.w_merge)*(-log_prob_ki-100.)
             ki_score[ki_score>0] = 0.
             ki_score[ki_score<-100.] = -100.
             Cki.append(ki_score)
@@ -463,7 +442,7 @@ class scorefn:
         ax.scatter(adjusted_centroids[:,0],adjusted_centroids[:,1],c="r",s=100,zorder=10)
         ax.scatter(adjusted_merged_centroids[:,0],adjusted_merged_centroids[:,1],c="white",s=100,zorder=10)
         
-    def plot_score_metrics(self,kymo_df,trenchid,t_range=(0,-1),u_size=0.25,sig_size=0.05,u_pos=0.25,sig_pos=0.1,viewpadding=0):
+    def plot_score_metrics(self,kymo_df,trenchid,t_range=(0,-1),u_size=0.25,sig_size=0.05,u_pos=0.25,sig_pos=0.1,w_merge=0.8,viewpadding=0):
         self.viewpadding = viewpadding
         
         trench = kymo_df.loc[trenchid]
@@ -479,6 +458,7 @@ class scorefn:
         t0,tf = t_range
         self.u_pos,self.sig_pos = (u_pos,sig_pos)
         self.u_size,self.sig_size = (u_size,sig_size)
+        self.w_merge = w_merge
         labeled_data = get_labeled_data(data,orientation)
         
         centroids,sizes,bboxes,empty_trenches = get_segment_props(labeled_data,interpolate_empty_trenches=True)
@@ -520,16 +500,18 @@ class scorefn:
                  sig_size=FloatSlider(value=self.sig_size, min=0., max=0.5, step=0.01),\
                  u_pos=FloatSlider(value=self.u_pos, min=0., max=1., step=0.01),\
                  sig_pos=FloatSlider(value=self.sig_pos, min=0., max=0.5, step=0.01),\
+                 w_merge=FloatSlider(value=self.w_merge, min=0., max=1., step=0.01),\
                  viewpadding=IntSlider(value=0, min=0, max=20, step=1));
         
         display(self.output)
-            
+
 class tracking_solver:
     def __init__(self,headpath,segfolder,paramfile=False,ScoreFn=False,intensity_channel_list=None,props_list=['centroid','area'],\
-                 pixel_scaling_fns=[(lambda x,p: (x[0]*p,x[1]*p)),(lambda x,p: x*(p**2))],\
+                 props_to_unpack={'centroid':['centroid y','centroid x']},pixel_scaling_factors={'centroid y': 1,'centroid x': 1, 'area': 2},\
                  intensity_props_list=['mean_intensity'],merge_per_iter=0,conv_tolerence=2,edge_limit=3,\
-                 u_size=0.22,sig_size=0.08,u_pos=0.21,sig_pos=0.1):
+                 u_size=0.22,sig_size=0.08,u_pos=0.21,sig_pos=0.1,w_merge=0.8):
         
+                
         if paramfile:
             parampath = headpath + "/lineage_tracing.par"
             with open(parampath, 'rb') as infile:
@@ -543,6 +525,7 @@ class tracking_solver:
             sig_size = param_dict["Standard Deviation of Size Increase:"]
             u_pos = param_dict["Mean Position Increase:"]
             sig_pos = param_dict["Standard Deviation of Position Increase:"]
+            w_merge = param_dict["Cell Merging Weight:"]
         
         self.headpath = headpath
         self.segpath = headpath + "/" + segfolder
@@ -556,13 +539,14 @@ class tracking_solver:
         self.props_list = props_list
         
         
-        self.pixel_scaling_fns = pixel_scaling_fns
+        self.pixel_scaling_factors = pixel_scaling_factors
+        self.props_to_unpack = props_to_unpack
         self.intensity_props_list = intensity_props_list
         
         if ScoreFn:
             self.ScoreFn = ScoreFn
         else:
-            self.ScoreFn = scorefn(headpath,segfolder,u_size=u_size,sig_size=sig_size,u_pos=u_pos,sig_pos=sig_pos)
+            self.ScoreFn = scorefn(headpath,segfolder,u_size=u_size,sig_size=sig_size,u_pos=u_pos,sig_pos=sig_pos,w_merge=w_merge)
         self.merge_per_iter = merge_per_iter
         self.conv_tolerence = conv_tolerence
         self.edge_limit = edge_limit
@@ -1010,8 +994,10 @@ class tracking_solver:
         cell_ids_list = [copy.copy(cell_ids)]
         mother_dict = {}
         daughter_dict = {}
+        sister_dict = {}
 
         for t in range(0,len(Aik_arr_list)):
+            max_cells = len(sizes[t+1])
             if t in empty_trenches:
                 cell_ids_list.append(copy.copy(cell_ids_list[-1]))
             else:
@@ -1019,45 +1005,83 @@ class tracking_solver:
                 ttl_added = 0
                 for idx in range(len(Aik_cords[0])):
                     i = Aik_cords[0][idx]
+                    current_idx = i+ttl_added
                     
-                    daughter_id1,daughter_id2 = (current_max_id+1,current_max_id+2)
-                    
-                    mother_dict[daughter_id1] = cell_ids[i+ttl_added]
-                    mother_dict[daughter_id2] = cell_ids[i+ttl_added]
-                    daughter_dict[cell_ids[i+ttl_added]] = (daughter_id1,daughter_id2)
+                    if current_idx == (max_cells-1):
+                        
+                        daughter_id1,daughter_id2 = (current_max_id+1,-1)
 
-                    del cell_ids[i+ttl_added]
-                    cell_ids.insert(i+ttl_added,daughter_id1)
-                    cell_ids.insert(i+1+ttl_added,daughter_id2)
+                        mother_dict[daughter_id1] = cell_ids[current_idx]
+                        sister_dict[daughter_id1] = daughter_id2
+                        
+                        daughter_dict[cell_ids[current_idx]] = (daughter_id1,daughter_id2)
 
-                    current_max_id += 2
-                    ttl_added += 1
+                        del cell_ids[current_idx]
+                        cell_ids.insert(current_idx,daughter_id1)
+
+                        current_max_id += 1
+                        break
+                        
+                    elif current_idx>(max_cells-1):
+                        daughter_id1,daughter_id2 = (-1,-1)
+                        daughter_dict[cell_ids[current_idx]] = (daughter_id1,daughter_id2)
+                        del cell_ids[current_idx]
+                        break
+                        
+                    else:
                     
-                max_cells = len(sizes[t+1])
+                        daughter_id1,daughter_id2 = (current_max_id+1,current_max_id+2)
+
+                        mother_dict[daughter_id1] = cell_ids[current_idx]
+                        sister_dict[daughter_id1] = daughter_id2
+                        
+                        mother_dict[daughter_id2] = cell_ids[current_idx]
+                        sister_dict[daughter_id2] = daughter_id1
+                        
+                        daughter_dict[cell_ids[current_idx]] = (daughter_id1,daughter_id2)
+
+                        del cell_ids[current_idx]
+                        cell_ids.insert(current_idx,daughter_id1)
+                        cell_ids.insert(current_idx+1,daughter_id2)
+
+                        current_max_id += 2
+                        ttl_added += 1
+                    
                 cell_ids = copy.copy(cell_ids[:max_cells])
                 cell_ids_list.append(copy.copy(cell_ids[:max_cells]))
                 
-        return mother_dict,daughter_dict,cell_ids_list
+        return mother_dict,daughter_dict,sister_dict,cell_ids_list
     
-    def get_cell_lineage(self,cell_id,mother_dict,daughter_dict):     
-        if (cell_id in daughter_dict.keys()) and (cell_id in mother_dict.keys()):
+    def get_cell_lineage(self,file_idx,file_trench_idx,cell_id,mother_dict,daughter_dict,sister_dict):
+        
+        if cell_id in daughter_dict.keys():
+            daughter_id_1 = daughter_dict[cell_id][0]
+            daughter_id_2 = daughter_dict[cell_id][1]
+        else:
+            daughter_id_1 = -1
+            daughter_id_2 = -1
+        if cell_id in mother_dict.keys():
             mother_id = mother_dict[cell_id]
-            daughter_ids = daughter_dict[cell_id]
-        elif cell_id in mother_dict.keys():
-            mother_id = mother_dict[cell_id]
-            daughter_ids = (-1,-1)
-        elif cell_id in daughter_dict.keys():
-            mother_id = -1
-            daughter_ids = daughter_dict[cell_id]
         else:
             mother_id = -1
-            daughter_ids = (-1,-1)
-            
-        output = [mother_id,daughter_ids]
+        if cell_id in sister_dict.keys():
+            sister_id = sister_dict[cell_id]
+        else:
+            sister_id = -1
+        
+        output_list = [mother_id,daughter_id_1,daughter_id_2,sister_id]
+        output = []
+        
+        for item in output_list:
+            if item == -1:
+                output.append(-1)
+            else:
+                global_id = int(f'{file_idx:04}{file_trench_idx:04}{item:04}')
+                output.append(global_id)
 
         return output
     
-    def get_lineage_df(self,file_idx,file_trench_idx,lineage_score,labeled_data,empty_trenches,mother_dict,daughter_dict,cell_ids_list):
+    def get_lineage_df(self,file_idx,file_trench_idx,lineage_score,labeled_data,empty_trenches,mother_dict,daughter_dict,sister_dict,cell_ids_list):
 
         kymograph_file = self.kymopath + "/kymograph_" + str(file_idx) + ".hdf5"
         if self.intensity_channel_list is not None:
@@ -1067,7 +1091,7 @@ class tracking_solver:
                     kymo_arr_list.append(kymofile[intensity_channel][:])
                     
         pixel_microns = self.metadata['pixel_microns']
-        
+                
         props_output = []
         for t in range(labeled_data.shape[0]):
             if t not in empty_trenches:
@@ -1083,38 +1107,75 @@ class tracking_solver:
                         intensity_rps_list.append(intensity_rps)
                 
                 for idx in range(ttl_ids):
-                    cell_id = cell_ids[idx]
+                    cell_id = cell_ids[idx]                    
+                    global_cell_id = int(f'{file_idx:04}{file_trench_idx:04}{cell_id:04}')
                     rp = non_intensity_rps[idx]
 
-                    props_entry = [file_idx, file_trench_idx, t, cell_id, lineage_score]
-                    props_entry += self.get_cell_lineage(cell_id,mother_dict,daughter_dict)
-
-                    props_entry += [self.pixel_scaling_fns[k](getattr(rp, prop_key),pixel_microns) for k,prop_key in enumerate(self.props_list)]
+                    props_entry = [file_idx, file_trench_idx, t, cell_id, global_cell_id, lineage_score]
+                    props_entry += self.get_cell_lineage(file_idx,file_trench_idx,cell_id,mother_dict,daughter_dict,sister_dict)
                     
+                    for prop_key in self.props_list:
+                        prop = getattr(rp, prop_key)
+                        if prop_key in self.props_to_unpack.keys():
+                            prop_out = dict(zip(self.props_to_unpack[prop_key],list(prop)))
+                        else:
+                            prop_out = {prop_key:prop}
+                        for key,value in prop_out.items():
+                            if key in self.pixel_scaling_factors.keys():
+                                output = value*(pixel_microns**self.pixel_scaling_factors[key])
+                            else:
+                                output = value
+                            props_entry.append(output)
+                                            
                     if self.intensity_channel_list is not None:
                         for i,intensity_channel in enumerate(self.intensity_channel_list):
                             intensity_rps=intensity_rps_list[i]
                             inten_rp = intensity_rps[idx]
-                            props_entry += [getattr(inten_rp, prop_key) for prop_key in self.intensity_props_list]
                             
+                            for prop_key in self.intensity_props_list:
+                                prop = getattr(inten_rp, prop_key)
+                                if prop_key in self.props_to_unpack.keys():
+                                    prop_out = dict(zip(self.props_to_unpack[prop_key],list(prop)))
+                                else:
+                                    prop_out = {prop_key:prop}
+                                for key,value in prop_out.items():
+                                    if key in self.pixel_scaling_factors.keys():
+                                        output = value*(pixel_microns**self.pixel_scaling_factors[key])
+                                    else:
+                                        output = value
+                                    props_entry.append(output)
+                                    
                     props_output.append(props_entry)
         
-        base_list = ['File Index','File Trench Index','timepoints','CellID', 'Trench Score', 'Mother CellID', 'Daughter CellID']
+        base_list = ['File Index','File Trench Index','timepoints','CellID','Global CellID','Trench Score','Mother CellID','Daughter CellID 1','Daughter CellID 2','Sister CellID']
+
+        unpacked_props_list = []
+        for prop_key in self.props_list:
+            if prop_key in self.props_to_unpack.keys():
+                unpacked_names = self.props_to_unpack[prop_key]
+                unpacked_props_list += unpacked_names
+            else:
+                unpacked_props_list.append(prop_key)
+                
         if self.intensity_channel_list is not None:
-            channel_intensity_names = []
             for channel in self.intensity_channel_list:
-                channel_intensity_names += [channel + " " + prop_key for prop_key in self.intensity_props_list]
-            column_list = base_list + self.props_list + channel_intensity_names
-            
-        else:
-            column_list = base_list + self.props_list
+                for prop_key in self.intensity_props_list:
+                    if prop_key in self.props_to_unpack.keys():
+                        unpacked_names = self.props_to_unpack[prop_key]
+                        unpacked_props_list += [channel + " " + item for item in unpacked_names]
+                    else:
+                        unpacked_props_list.append(channel + " " + prop_key)
+                        
+        column_list = base_list + unpacked_props_list
             
         df_out = pd.DataFrame(props_output, columns=column_list).reset_index()
         df_out = df_out.set_index(['File Index','File Trench Index','timepoints','CellID'], drop=True, append=False, inplace=False)
 
         df_out = df_out.sort_index()
+        
         return df_out
     
+
     def lineage_trace(self,file_idx,file_trench_idx):
         meta_handle = pandas_hdf5_handler(self.headpath+"/metadata.hdf5")
         
@@ -1132,9 +1193,9 @@ class tracking_solver:
         
         labeled_data,_,sizes,_,Aik_arr_list,_,_,lineage_score,empty_trenches = self.compute_lineage(data,orientation)
         
-        mother_dict,daughter_dict,cell_ids_list = self.get_nuclear_lineage(sizes,empty_trenches,Aik_arr_list)
+        mother_dict,daughter_dict,sister_dict,cell_ids_list = self.get_nuclear_lineage(sizes,empty_trenches,Aik_arr_list)
                 
-        df_out = self.get_lineage_df(file_idx,file_trench_idx,lineage_score,labeled_data,empty_trenches,mother_dict,daughter_dict,cell_ids_list)
+        df_out = self.get_lineage_df(file_idx,file_trench_idx,lineage_score,labeled_data,empty_trenches,mother_dict,daughter_dict,sister_dict,cell_ids_list)
         
         return df_out
 
@@ -1148,16 +1209,41 @@ class tracking_solver:
         filedf = filedf.loc[file_idx]
         trench_idx_list = filedf.index.get_level_values(0).unique().tolist()
         
-        merged_df = []
+        mergeddf = []
         for file_trench_idx in trench_idx_list:
             try:
                 df_out = self.lineage_trace(file_idx,file_trench_idx)
-                merged_df.append(df_out)
+                mergeddf.append(df_out)
             except:
                 pass
-        merged_df = pd.concat(merged_df)
-        temp_df_path = self.lineagepath + "/temp_df_" + str(file_idx) + ".pkl"
-        merged_df.to_pickle(temp_df_path)
+        mergeddf = pd.concat(mergeddf)
+        
+        kymo_meta = self.meta_handle.read_df("kymograph")
+        kymo_meta = kymo_meta.reset_index(inplace=False)
+        kymo_meta = kymo_meta.set_index(["File Index","File Trench Index","timepoints"], drop=True, append=False, inplace=False)
+        kymo_meta = kymo_meta.sort_index()
+        kymo_meta = kymo_meta.loc[file_idx:file_idx]
+        
+        mergeddf = mergeddf.reset_index(inplace=False)
+        mergeddf = mergeddf.set_index(["File Index","File Trench Index","timepoints"], drop=True, append=False, inplace=False)
+        mergeddf = mergeddf.sort_index()        
+        mergeddf = mergeddf.join(kymo_meta)
+        mergeddf = mergeddf.reset_index(inplace=False)
+        mergeddf = mergeddf.set_index(["File Index","File Trench Index","timepoints","CellID"], drop=True, append=False, inplace=False)
+        del mergeddf["index"]
+        mergeddf = mergeddf.sort_index()
+        
+        new_index = mergeddf.index.map(lambda x: int(f'{x[0]:04}{x[1]:04}{x[2]:04}{x[3]:04}'))
+        mergeddf = mergeddf.reset_index(drop=False,inplace=False)
+        mergeddf.index = [item for item in new_index]
+        mergeddf = mergeddf.dropna()
+        
+        df_path = self.lineagepath + "/block_" + str(file_idx) + ".parquet"
+        
+        del kymo_meta
+        
+        mergeddf.to_parquet(df_path,engine='fastparquet',compression='gzip')
+        print("Done.")
         
         return file_idx
             
@@ -1172,64 +1258,20 @@ class tracking_solver:
             future = dask_cont.daskclient.submit(self.lineage_trace_file,file_idx,retries=1,priority=priority)
             dask_cont.futures["File Index: " + str(file_idx)] = future
             
-    def compile_lineage_data(self,dask_cont):
+    def wait_for_completion(self,dask_cont):
         kymo_meta = self.meta_handle.read_df("kymograph")
         file_list = kymo_meta["File Index"].unique().tolist()
         num_file_jobs = len(file_list)
         file_idx_list = dask_cont.daskclient.gather([dask_cont.futures["File Index: " + str(file_idx)] for file_idx in file_list],errors="skip")
         
-        ttl_indices = len(file_idx_list)
-    
-        df_out = []
-        for file_idx in file_idx_list:
-            temp_df_path = self.lineagepath + "/temp_df_" + str(file_idx) + ".pkl"
-            temp_df = pd.read_pickle(temp_df_path)
-            df_out.append(temp_df)
-            os.remove(temp_df_path)
-        df_out = pd.concat(df_out)
-        
-        kymo_meta = kymo_meta.reset_index(inplace=False)
-        kymo_meta = kymo_meta.set_index(["File Index","File Trench Index","timepoints"], drop=True, append=False, inplace=False)
-        kymo_meta = kymo_meta.sort_index()
-
-        df_out = df_out.reset_index(inplace=False)
-        df_out = df_out.set_index(["File Index","File Trench Index","timepoints"], drop=True, append=False, inplace=False)
-        df_out = df_out.sort_index()
-
-        mergeddf = df_out.join(kymo_meta)
-        mergeddf = mergeddf.reset_index(inplace=False)
-        mergeddf = mergeddf.set_index(["File Index","File Trench Index","timepoints","CellID"], drop=True, append=False, inplace=False)
-        del mergeddf["index"]
-        mergeddf = mergeddf.sort_index()
-        
-        mergeddf.to_pickle(self.lineagepath + "/lineage_data.pkl")
-        
-    def compute_all_lineages(self,dask_cont=None,n_workers=100,memory='4GB',walltime='04:00:00',local=False):        
+    def compute_all_lineages(self,dask_cont,n_workers=100,memory='4GB',walltime='04:00:00',local=False):        
         writedir(self.lineagepath,overwrite=True)
-        
-        if dask_cont is not None:
-            dask_cont.daskclient.restart()
-            dask_cont.futures = {}
-            try:
-                self.lineage_trace_all_files(dask_cont)
-                self.compile_lineage_data(dask_cont)
-            except:
-                raise
-        
-        else:
-            dask_cont = dask_controller(walltime=walltime,local=local,n_workers=n_workers,memory=memory,working_directory=self.headpath+"/dask")
-            dask_cont.startdask()
-            dask_cont.daskcluster.start_workers()
-            dask_cont.displaydashboard()
-            dask_cont.futures = {}
-        
-            try:
-                self.lineage_trace_all_files(dask_cont)
-                self.compile_lineage_data(dask_cont)
-                dask_cont.shutdown()
-            except:
-                dask_cont.shutdown()
-                raise
+        dask_cont.daskclient.restart()
+        dask_cont.futures = {}
+        try:
+            self.lineage_trace_all_files(dask_cont)
+        except:
+            raise
 
     def test_tracking(self,data,orientation,intensity_channel_list=None,t_range=(0,-1),merge_per_iter=0,edge_limit=3,conv_tolerence=2,viewpadding=0,x_size=18,y_size=6):
         if len(intensity_channel_list) == 0:
@@ -1242,10 +1284,6 @@ class tracking_solver:
         self.conv_tolerence = conv_tolerence
         
         labeled_data,centroids,sizes,Aij_arr_list,Aik_arr_list,Aki_arr_list,Ai_arr_list,lineage_score,empty_trenches = self.compute_lineage(data,orientation)
-
-        ### don't delete this comment ###
-#         self.plot_tracking_sln(labeled_data,centroids,Aij_arr_list,Aik_arr_list,Aki_arr_list,Ae_arr_list,t0=t_range[0],tf=t_range[1],x_size=x_size,y_size=y_size)
-        ###                           ###
     
         self.plot_cleaned_sln(labeled_data,centroids,Aij_arr_list,Aik_arr_list,Aki_arr_list,t0=t_range[0],tf=t_range[1],x_size=x_size,y_size=y_size)
     
@@ -1257,9 +1295,9 @@ class tracking_solver:
                  intensity_channel_list = SelectMultiple(options=available_channels),\
                  t_range=IntRangeSlider(value=[0, data.shape[0]-1],min=0,max=data.shape[0]-1,\
                  step=1,disabled=False,continuous_update=False),\
-                 merge_per_iter=IntSlider(value=1, min=0, max=10, step=1),\
-                 edge_limit=IntSlider(value=3, min=1, max=6, step=1),\
-                 conv_tolerence=IntSlider(value=2, min=1, max=4, step=1),\
+                 merge_per_iter=IntSlider(value=self.merge_per_iter, min=0, max=10, step=1),\
+                 edge_limit=IntSlider(value=self.edge_limit, min=1, max=6, step=1),\
+                 conv_tolerence=IntSlider(value=self.conv_tolerence, min=1, max=4, step=1),\
                  viewpadding=IntSlider(value=0, min=0, max=20, step=1),\
                  x_size=IntSlider(value=18, min=0, max=30, step=1),\
                  y_size=IntSlider(value=8, min=0, max=20, step=1));
@@ -1277,6 +1315,7 @@ class tracking_solver:
         param_dict["Standard Deviation of Size Increase:"] = self.ScoreFn.sig_size
         param_dict["Mean Position Increase:"] = self.ScoreFn.u_pos
         param_dict["Standard Deviation of Position Increase:"] = self.ScoreFn.sig_pos
+        param_dict["Cell Merging Weight:"] = self.ScoreFn.w_merge
         
         for key,value in param_dict.items():
             print(key + " " + str(value))

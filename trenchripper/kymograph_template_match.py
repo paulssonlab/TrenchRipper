@@ -10,7 +10,7 @@ import sys
 import h5py_cache
 
 from skimage import filters
-from .cluster import hdf5lock
+from .trcluster import hdf5lock
 from .utils import multifov,pandas_hdf5_handler,writedir
 from .drift_detection import find_seed_image, get_orb_pois, find_drift_poi, find_template, find_drift_template
 
