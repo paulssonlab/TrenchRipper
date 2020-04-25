@@ -3,6 +3,7 @@ setup.py
 TrenchRipper.egg-info/PKG-INFO
 TrenchRipper.egg-info/SOURCES.txt
 TrenchRipper.egg-info/dependency_links.txt
+TrenchRipper.egg-info/requires.txt
 TrenchRipper.egg-info/top_level.txt
 trenchripper/DetectPeaks.py
 trenchripper/__init__.py
