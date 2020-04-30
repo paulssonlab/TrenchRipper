@@ -4,6 +4,7 @@ import skimage as sk
 import h5py
 import pickle
 
+from ipywidgets import interact, interactive, fixed, interact_manual, FloatSlider, IntSlider, Dropdown, IntText, SelectMultiple, IntRangeSlider, FloatRangeSlider
 from skimage import filters
 from mpl_toolkits.mplot3d import Axes3D
 from matplotlib.collections import PolyCollection
@@ -25,13 +26,11 @@ class kymograph_interactive(kymograph_multifov):
         #break all_channels,fov_list,t_subsample_step=t_subsample_step
         super(kymograph_interactive, self).__init__(headpath)
         
-        self.final_params = {}
+        self.channels = self.metadata["channels"]
+        self.fov_list = self.metadata["fields_of_view"]
+        self.timepoints_len = self.metadata["num_frames"]
         
-    def get_image_params(self):
-        channels = self.metadata["channels"]
-        fov_list = self.metadata["fields_of_view"]
-        timepoints_len = self.metadata["num_frames"]
-        return channels,fov_list,timepoints_len
+        self.final_params = {}
         
     def view_image(self,fov_idx,t,channel,invert):
         img_entry = self.metadf.loc[fov_idx,t]
@@ -42,28 +41,48 @@ class kymograph_interactive(kymograph_multifov):
             img_arr = infile[channel][img_idx,:,:]
         if invert:
             img_arr = sk.util.invert(img_arr)
-        plt.imshow(img_arr)
-
+        plt.imshow(img_arr,cmap="Greys_r")
+        
+    def view_image_interactive(self):
+        
+        interact(self.view_image,fov_idx=IntText(value=0,description='FOV number:',disabled=False),\
+             t=IntSlider(value=0, min=0, max=self.timepoints_len-1, step=1,continuous_update=False),
+            channel=Dropdown(options=self.channels,value=self.channels[0],description='Channel:',disabled=False),\
+            invert=Dropdown(options=[True,False],value=False))
+        
+    def import_hdf5_interactive(self):
+        import_hdf5 = interactive(self.import_hdf5_files, {"manual":True}, all_channels=fixed(self.channels),\
+                                  seg_channel=Dropdown(options=self.channels, value=self.channels[0]),invert=Dropdown(options=[True,False],\
+                                  value=False), fov_list=SelectMultiple(options=self.fov_list), t_range=IntRangeSlider(value=[0, self.timepoints_len-1],\
+                                  min=0,max=self.timepoints_len-1,step=1,disabled=False,continuous_update=False),t_subsample_step=IntSlider(value=10,\
+                                  min=0, max=200, step=1));
+        display(import_hdf5)
+        
     def preview_y_precentiles(self,imported_array_list, y_percentile, smoothing_kernel_y_dim_0,\
-                          triangle_nbins,triangle_scaling,triangle_threshold_bounds):
-        
-        triangle_min_threshold,triangle_max_threshold = triangle_threshold_bounds
-        
+                          y_percentile_threshold):
+                
         self.final_params['Y Percentile'] = y_percentile
         self.final_params['Y Smoothing Kernel'] = smoothing_kernel_y_dim_0
-        self.final_params['Triangle Threshold Bins'] = triangle_nbins
-        self.final_params['Triangle Threshold Scaling'] = triangle_scaling
-        self.final_params['Triangle Max Threshold'] = triangle_max_threshold
-        self.final_params['Triangle Min Threshold'] = triangle_min_threshold
+        self.final_params['Y Percentile Threshold'] = y_percentile_threshold
         
         y_percentiles_smoothed_list = self.map_to_fovs(self.get_smoothed_y_percentiles,imported_array_list,\
-                                                       y_percentile,(smoothing_kernel_y_dim_0,1))
-        thresholds = [self.triangle_threshold(y_percentiles_smoothed,triangle_nbins,triangle_scaling,\
-                        triangle_max_threshold,triangle_min_threshold)[1] for y_percentiles_smoothed in y_percentiles_smoothed_list]
-        self.plot_y_precentiles(y_percentiles_smoothed_list,self.fov_list,thresholds)
+                                                       y_percentile,(smoothing_kernel_y_dim_0,1))    
+        
+        self.plot_y_precentiles(y_percentiles_smoothed_list,self.fov_list,y_percentile_threshold)
+        
+        self.y_percentiles_smoothed_list = y_percentiles_smoothed_list
+        
         return y_percentiles_smoothed_list
+    
+    def preview_y_precentiles_interactive(self):
+        row_detection = interactive(self.preview_y_precentiles, {"manual":True},\
+                        imported_array_list=fixed(self.imported_array_list), y_percentile=IntSlider(value=99,\
+                        min=0, max=100, step=1), smoothing_kernel_y_dim_0=IntSlider(value=29, min=1,\
+                        max=200, step=2), y_percentile_threshold=FloatSlider(value=0.2, min=0., max=1., step=0.01))
+        display(row_detection)
+    
            
-    def plot_y_precentiles(self,y_percentiles_smoothed_list,fov_list,thresholds):
+    def plot_y_precentiles(self,y_percentiles_smoothed_list,fov_list,y_percentile_threshold):
         fig = plt.figure()
         
         ### Subplot dimensions of plot
@@ -96,8 +115,8 @@ class kymograph_interactive(kymograph_multifov):
             y_len = y_percentiles_smoothed.shape[1]
             thr_x = np.repeat(np.add.accumulate(np.ones(x_len,dtype=int))[:,np.newaxis],y_len,axis=1).T.flatten()
             thr_y = np.repeat(np.add.accumulate(np.ones(y_len,dtype=int)),x_len)
-#             
-            thr_z = np.concatenate([np.repeat(threshold,x_len) for threshold in thresholds[j]],axis=0)
+            thr_z = np.repeat(y_percentile_threshold,x_len*y_len)
+            
             for i in range(0,x_len*y_len,x_len):
                 ax.plot(thr_x[i:i+x_len],thr_y[i:i+x_len],thr_z[i:i+x_len],c='r')
             
@@ -112,33 +131,8 @@ class kymograph_interactive(kymograph_multifov):
             
         plt.show()
         
-        
-#         y_percentiles_smoothed_list = self.map_to_fovs(self.get_smoothed_y_percentiles,imported_array_list,\
-#                                                        self.y_percentile,self.smoothing_kernel_y)
-        
-#         get_trench_edges_y_output = self.map_to_fovs(self.get_trench_edges_y,y_percentiles_smoothed_list,self.triangle_nbins,self.triangle_scaling)
-#         trench_edges_y_lists = [item[0] for item in get_trench_edges_y_output]
-#         start_above_lists = [item[1] for item in get_trench_edges_y_output]
-#         end_above_lists = [item[2] for item in get_trench_edges_y_output]
-                
-#         orientations_list = self.map_to_fovs(self.get_manual_orientations,trench_edges_y_lists,start_above_lists,end_above_lists,self.expected_num_rows,\
-#                                              self.orientation_detection,self.orientation_on_fail,self.y_min_edge_dist)
-        
-#         y_ends_lists = self.map_to_fovs(self.get_trench_ends,trench_edges_y_lists,start_above_lists,end_above_lists,orientations_list,self.y_min_edge_dist)
-
-#         y_drift_list = self.map_to_fovs(self.get_y_drift,y_ends_lists)
-        
-#         keep_in_frame_kernels_output = self.map_to_fovs(self.keep_in_frame_kernels,y_ends_lists,y_drift_list,imported_array_list,orientations_list,self.padding_y,self.trench_len_y)
-#         valid_y_ends_lists = [item[0] for item in keep_in_frame_kernels_output]
-#         valid_orientations_list = [item[1] for item in keep_in_frame_kernels_output]
-#         cropped_in_y_list = self.map_to_fovs(self.crop_y,imported_array_list,y_drift_list,valid_y_ends_lists,,self.padding_y,\
-#                                              self.trench_len_y)
-        
-#         return cropped_in_y_list
-        
-        
     def preview_y_crop(self,y_percentiles_smoothed_list, imported_array_list,y_min_edge_dist, padding_y,\
-                       trench_len_y,vertical_spacing,expected_num_rows,orientation_detection,orientation_on_fail):
+                       trench_len_y,expected_num_rows,orientation_detection,orientation_on_fail,images_per_row):
         
         self.final_params['Minimum Trench Length'] = y_min_edge_dist
         self.final_params['Y Padding'] = padding_y
@@ -147,12 +141,9 @@ class kymograph_interactive(kymograph_multifov):
         self.final_params['Expected Number of Rows (Manual Orientation Detection)'] = expected_num_rows
         self.final_params['Top Orientation when Row Drifts Out (Manual Orientation Detection)'] = orientation_on_fail
         
-        triangle_nbins = self.final_params['Triangle Threshold Bins']
-        triangle_scaling = self.final_params['Triangle Threshold Scaling']
-        triangle_max_threshold = self.final_params['Triangle Max Threshold']
-        triangle_min_threshold = self.final_params['Triangle Min Threshold']
+        y_percentile_threshold = self.final_params['Y Percentile Threshold']
         
-        get_trench_edges_y_output = self.map_to_fovs(self.get_trench_edges_y,y_percentiles_smoothed_list,triangle_nbins,triangle_scaling,triangle_max_threshold,triangle_min_threshold)
+        get_trench_edges_y_output = self.map_to_fovs(self.get_trench_edges_y,y_percentiles_smoothed_list,y_percentile_threshold)
         trench_edges_y_lists = [item[0] for item in get_trench_edges_y_output]
         start_above_lists = [item[1] for item in get_trench_edges_y_output]
         end_above_lists = [item[2] for item in get_trench_edges_y_output]
@@ -162,11 +153,6 @@ class kymograph_interactive(kymograph_multifov):
         orientations_list = [item[0] for item in get_manual_orientations_output]
         drop_first_row_list = [item[1] for item in get_manual_orientations_output]
         drop_last_row_list = [item[2] for item in get_manual_orientations_output]
-#         orientations,drop_first_row,drop_last_row
-        
-#         orientations_list = self.map_to_fovs(self.get_manual_orientations,trench_edges_y_lists,start_above_lists,end_above_lists,expected_num_rows,\
-#                                              orientation_detection,orientation_on_fail,y_min_edge_dist)
-# get_trench_ends(self,i,trench_edges_y_lists,start_above_lists,end_above_lists,orientations_list,drop_first_row_list,drop_last_row_list,y_min_edge_dist):
 
         y_ends_lists = self.map_to_fovs(self.get_trench_ends,trench_edges_y_lists,start_above_lists,end_above_lists,orientations_list,drop_first_row_list,drop_last_row_list,y_min_edge_dist)
         y_drift_list = self.map_to_fovs(self.get_y_drift,y_ends_lists)
@@ -176,18 +162,44 @@ class kymograph_interactive(kymograph_multifov):
         valid_orientations_list = [item[1] for item in keep_in_frame_kernels_output]
         cropped_in_y_list = self.map_to_fovs(self.crop_y,imported_array_list,y_drift_list,valid_y_ends_list,valid_orientations_list,padding_y,trench_len_y)
 
-        self.plot_y_crop(cropped_in_y_list,imported_array_list,self.fov_list,vertical_spacing,valid_orientations_list)
-        return cropped_in_y_list
+        self.plot_y_crop(cropped_in_y_list,imported_array_list,self.fov_list,valid_orientations_list,images_per_row)
         
-    def plot_y_crop(self,cropped_in_y_list,imported_array_list,fov_list,vertical_spacing,valid_orientations_list):
-        fig = plt.figure()
-        ax = fig.gca(projection='3d')
+        self.cropped_in_y_list = cropped_in_y_list
+        
+        return cropped_in_y_list
+    
+    def preview_y_crop_interactive(self):
+        
+        y_cropping = interactive(self.preview_y_crop,{"manual":True},y_percentiles_smoothed_list=fixed(self.y_percentiles_smoothed_list),\
+                imported_array_list=fixed(self.imported_array_list),\
+                y_min_edge_dist=IntSlider(value=50, min=10, max=200, step=10),\
+                padding_y=IntSlider(value=20, min=0, max=100, step=1),\
+                trench_len_y=IntSlider(value=270, min=0, max=1000, step=10),
+                expected_num_rows=IntText(value=2,description='Number of Rows:',disabled=False),\
+               orientation_detection=Dropdown(options=[0, 1, 'phase'],value=0,description='Orientation:',disabled=False),
+                orientation_on_fail=Dropdown(options=[None,0, 1],value=0,description='Orientation when < expected rows:',disabled=False),\
+                 images_per_row=IntSlider(value=3, min=1, max=10, step=1))
+        
+        display(y_cropping)
+        
+    def plot_y_crop(self,cropped_in_y_list,imported_array_list,fov_list,valid_orientations_list,images_per_row):
         
         time_list = range(1,imported_array_list[0].shape[3]+1)
+        time_per_img = len(time_list)
+        ttl_lanes = np.sum([len(item) for item in valid_orientations_list])
+        ttl_imgs = ttl_lanes*time_per_img
         
-        nrows = np.sum([len(item) for item in valid_orientations_list])
-        ncols = len(time_list)
+        remaining_imgs = time_per_img%images_per_row
+        if remaining_imgs == 0:
+            rows_per_lane = time_per_img//images_per_row
+        else:
+            rows_per_lane = (time_per_img//images_per_row) + 1
+
+        nrows = rows_per_lane*ttl_lanes
+        ncols = images_per_row
         
+        fig, _ = plt.subplots(figsize=(20, 10))
+                        
         idx = 0
         for i,cropped_in_y in enumerate(cropped_in_y_list):
             num_rows = len(valid_orientations_list[i])
@@ -195,12 +207,15 @@ class kymograph_interactive(kymograph_multifov):
                 for k,t in enumerate(time_list):
                     idx += 1
                     ax = plt.subplot(nrows,ncols,idx)
+                    ax.axis("off")
                     ax.set_title("row=" + str(j) + ",fov=" + str(fov_list[i]) + ",t=" + str(t))
-                    ax.imshow(cropped_in_y[j,0,:,:,k])
+                    ax.imshow(cropped_in_y[j,0,:,:,k],cmap="Greys_r")
+                if remaining_imgs != 0:
+                    for t in range(0,(images_per_row-remaining_imgs)):
+                        idx += 1
                     
-        plt.tight_layout()
-        plt.subplots_adjust(top=vertical_spacing)
-        plt.show()
+        fig.tight_layout()
+        fig.show()
         
     def preview_x_percentiles(self,cropped_in_y_list, t, x_percentile, background_kernel_x,smoothing_kernel_x,\
                               otsu_nbins, otsu_scaling,vertical_spacing):
@@ -219,8 +234,18 @@ class kymograph_interactive(kymograph_multifov):
                 x_percentiles_t = smoothed_x_percentiles[:,t]
                 thresholds.append(self.get_midpoints(x_percentiles_t,otsu_nbins,otsu_scaling)[1])
         self.plot_x_percentiles(smoothed_x_percentiles_list,self.fov_list, t, thresholds,vertical_spacing,num_rows=2)
+        
+        self.smoothed_x_percentiles_list = smoothed_x_percentiles_list
+        
         return smoothed_x_percentiles_list
         
+    def preview_x_percentiles_interactive(self):
+        trench_detection = interactive(self.preview_x_percentiles, {"manual":True}, cropped_in_y_list=fixed(self.cropped_in_y_list),t=IntSlider(value=0, min=0, max=self.cropped_in_y_list[0].shape[4]-1, step=1),\
+                x_percentile=IntSlider(value=85, min=50, max=100, step=1),background_kernel_x=IntSlider(value=21, min=1, max=601, step=20), smoothing_kernel_x=IntSlider(value=9, min=1, max=31, step=2),\
+               otsu_nbins=IntSlider(value=50, min=10, max=200, step=10),otsu_scaling=FloatSlider(value=0.25, min=0., max=2., step=0.01),\
+               vertical_spacing=FloatSlider(value=0.9, min=0., max=2., step=0.01));
+        
+        display(trench_detection)
         
     def plot_x_percentiles(self,smoothed_x_percentiles_list,fov_list,t,thresholds,vertical_spacing,num_rows=2):
         fig = plt.figure()
@@ -245,7 +270,6 @@ class kymograph_interactive(kymograph_multifov):
 
         plt.show()
     
-    
     def preview_midpoints(self,smoothed_x_percentiles_list,vertical_spacing):
         otsu_nbins = self.final_params['Otsu Threshold Bins']
         otsu_scaling = self.final_params['Otsu Threshold Scaling']
@@ -253,14 +277,15 @@ class kymograph_interactive(kymograph_multifov):
         all_midpoints_list = self.map_to_fovs(self.get_all_midpoints,smoothed_x_percentiles_list,otsu_nbins,otsu_scaling)
         self.plot_midpoints(all_midpoints_list,self.fov_list,vertical_spacing)
         x_drift_list = self.map_to_fovs(self.get_x_drift,all_midpoints_list)
+        
+        self.all_midpoints_list,self.x_drift_list = (all_midpoints_list,x_drift_list)
+        
         return all_midpoints_list,x_drift_list
-        
-#     def preview_corrected_midpoints(self,all_midpoints_list,x_drift_list,trench_width_x,trench_present_thr,vertical_spacing):
-#         self.final_params['Trench Width'] = trench_width_x
-#         self.final_params['Trench Presence Threshold'] = trench_present_thr
-        
-#         corrected_midpoints_list = self.map_to_fovs(self.get_corrected_midpoints,all_midpoints_list,x_drift_list,trench_width_x,trench_present_thr)
-#         self.plot_midpoints(corrected_midpoints_list,self.fov_list,vertical_spacing)
+    
+    def preview_midpoints_interactive(self):
+        midpoint_drift = interactive(self.preview_midpoints,{"manual":True},smoothed_x_percentiles_list=fixed(self.smoothed_x_percentiles_list),\
+               vertical_spacing=FloatSlider(value=0.8, min=0., max=2., step=0.01));
+        display(midpoint_drift)
                                                          
     def preview_kymographs(self,cropped_in_y_list,all_midpoints_list,x_drift_list,trench_width_x,trench_present_thr,vertical_spacing):
         self.final_params['Trench Width'] = trench_width_x
@@ -272,6 +297,12 @@ class kymograph_interactive(kymograph_multifov):
         
         self.plot_kymographs(cropped_in_x_list,self.fov_list,vertical_spacing)
         self.plot_midpoints(corrected_midpoints_list,self.fov_list,vertical_spacing)
+        
+    def preview_kymographs_interactive(self):        
+            interact_manual(self.preview_kymographs,cropped_in_y_list=fixed(self.cropped_in_y_list),all_midpoints_list=fixed(self.all_midpoints_list),\
+            x_drift_list=fixed(self.x_drift_list),trench_width_x=IntSlider(value=30, min=10, max=50, step=2),\
+            trench_present_thr=FloatSlider(value=0., min=0., max=1., step=0.05),\
+            vertical_spacing=FloatSlider(value=0.8, min=0., max=2., step=0.01))
         
     def plot_midpoints(self,all_midpoints_list,fov_list,vertical_spacing):
         fig = plt.figure()
@@ -324,7 +355,7 @@ class kymograph_interactive(kymograph_multifov):
         """
         list_in_t = [kymograph[:,:,t] for t in range(kymograph.shape[2])]
         img_arr = np.concatenate(list_in_t,axis=1)
-        ax.imshow(img_arr)
+        ax.imshow(img_arr,cmap="Greys_r")
         
     def process_results(self):
         self.final_params["All Channels"] = self.all_channels
@@ -416,17 +447,6 @@ class fluo_segmentation_interactive(fluo_segmentation):
             img_list.append(input_kymo.return_unwrap(padding=self.wrap_pad))
         self.plot_img_list(img_list)
         return img_list
-    
-#     def plot_scaled(self,kymo_arr,scale,scaling_percentile):
-#         self.final_params['Scale Fluorescence?'] = scale
-#         self.final_params["Scaling Percentile:"] = scaling_percentile
-#         input_kymo = kymo_handle()
-#         scaled_list = []
-#         for k in range(kymo_arr.shape[0]):
-#             input_kymo.import_wrap(kymo_arr[k],scale=scale,scale_perc=scaling_percentile)
-#             scaled_list.append(input_kymo.return_unwrap(padding=self.wrap_pad))
-#         self.plot_img_list(scaled_list)
-#         return scaled_list
     
     def plot_processed(self,kymo_arr,smooth_sigma,bit_max,scale,scaling_percentile):
         self.final_params['Gaussian Kernel Sigma:'] = smooth_sigma

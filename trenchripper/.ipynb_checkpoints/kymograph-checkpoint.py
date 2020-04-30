@@ -18,9 +18,9 @@ from tifffile import imread
 
 class kymograph_cluster:
     def __init__(self,headpath="",trenches_per_file=20,paramfile=False,all_channels=[""],trench_len_y=270,padding_y=20,trench_width_x=30,\
-                 t_range=(0,None),invert=False,y_percentile=85,y_min_edge_dist=50,smoothing_kernel_y=(1,9),triangle_nbins=50,triangle_scaling=1.,\
-                 triangle_max_threshold=0,triangle_min_threshold=65535,top_orientation=0,expected_num_rows=None,orientation_on_fail=None,\
-                 x_percentile=85,background_kernel_x=(1,21),smoothing_kernel_x=(1,9),otsu_nbins=50,otsu_scaling=1.,trench_present_thr=0.):
+                 t_range=(0,None),invert=False,y_percentile=85,y_min_edge_dist=50,smoothing_kernel_y=(1,9),y_percentile_threshold=0.2,\
+                 top_orientation=0,expected_num_rows=None,orientation_on_fail=None,x_percentile=85,background_kernel_x=(1,21),\
+                 smoothing_kernel_x=(1,9),otsu_nbins=50,otsu_scaling=1.,trench_present_thr=0.):
         
         if paramfile:
             parampath = headpath + "/kymograph.par"
@@ -36,10 +36,7 @@ class kymograph_cluster:
             y_percentile = param_dict["Y Percentile"]
             y_min_edge_dist = param_dict["Minimum Trench Length"]
             smoothing_kernel_y = (1,param_dict["Y Smoothing Kernel"])
-            triangle_nbins = param_dict["Triangle Threshold Bins"]
-            triangle_scaling = param_dict["Triangle Threshold Scaling"]
-            triangle_max_threshold = param_dict['Triangle Max Threshold']
-            triangle_min_threshold = param_dict['Triangle Min Threshold']
+            y_percentile_threshold = param_dict['Y Percentile Threshold']            
             top_orientation = param_dict["Orientation Detection Method"]
             expected_num_rows = param_dict["Expected Number of Rows (Manual Orientation Detection)"]
             orientation_on_fail = param_dict["Top Orientation when Row Drifts Out (Manual Orientation Detection)"]
@@ -75,10 +72,7 @@ class kymograph_cluster:
         self.y_min_edge_dist = y_min_edge_dist
         ## parameters for threshold finding
         self.smoothing_kernel_y = smoothing_kernel_y
-        self.triangle_nbins = triangle_nbins
-        self.triangle_scaling = triangle_scaling
-        self.triangle_max_threshold = triangle_max_threshold
-        self.triangle_min_threshold = triangle_min_threshold
+        self.y_percentile_threshold = y_percentile_threshold
         ### 
         self.top_orientation = top_orientation
         self.expected_num_rows = expected_num_rows
@@ -102,8 +96,7 @@ class kymograph_cluster:
         self.kymograph_params = {"trench_len_y":trench_len_y,"padding_y":padding_y,"ttl_len_y":ttl_len_y,\
                                  "trench_width_x":trench_width_x,"y_percentile":y_percentile,"invert":invert,\
                              "y_min_edge_dist":y_min_edge_dist,"smoothing_kernel_y":smoothing_kernel_y,\
-                                 "triangle_nbins":triangle_nbins,"triangle_scaling":triangle_scaling,\
-                                 "triangle_max_threshold":triangle_max_threshold,"triangle_min_threshold":triangle_min_threshold,\
+                                 "y_percentile_threshold":y_percentile_threshold,\
                                  "top_orientation":top_orientation,"expected_num_rows":expected_num_rows,\
                                  "orientation_on_fail":orientation_on_fail,"x_percentile":x_percentile,\
                                  "background_kernel_x":background_kernel_x,"smoothing_kernel_x":smoothing_kernel_x,\
@@ -157,26 +150,26 @@ class kymograph_cluster:
             
         return y_percentiles_smoothed
     
-    def triangle_threshold(self,img_arr,triangle_nbins,triangle_scaling,triangle_max_threshold,triangle_min_threshold):
-        """Applies a triangle threshold to each timepoint in a (t,y) input array, returning a boolean mask.
+#     def triangle_threshold(self,img_arr,triangle_nbins,triangle_scaling,triangle_max_threshold,triangle_min_threshold):
+#         """Applies a triangle threshold to each timepoint in a (t,y) input array, returning a boolean mask.
         
-        Args:
-            img_arr (array): ndarray to be thresholded.
-            triangle_nbins (int): Number of bins to be used to construct the thresholding
-            histogram.
-            triangle_scaling (float): Factor by which to scale the threshold.
+#         Args:
+#             img_arr (array): ndarray to be thresholded.
+#             triangle_nbins (int): Number of bins to be used to construct the thresholding
+#             histogram.
+#             triangle_scaling (float): Factor by which to scale the threshold.
         
-        Returns:
-            array: Boolean mask produced by the threshold.
-        """
-        all_thresholds = np.apply_along_axis(sk.filters.threshold_triangle,1,img_arr,nbins=triangle_nbins)*triangle_scaling
-        thresholds_above_min = all_thresholds > triangle_min_threshold
-        thresholds_below_max = all_thresholds < triangle_max_threshold
-        all_thresholds[~thresholds_above_min] = triangle_min_threshold
-        all_thresholds[~thresholds_below_max] = triangle_max_threshold
+#         Returns:
+#             array: Boolean mask produced by the threshold.
+#         """
+#         all_thresholds = np.apply_along_axis(sk.filters.threshold_triangle,1,img_arr,nbins=triangle_nbins)*triangle_scaling
+#         thresholds_above_min = all_thresholds > triangle_min_threshold
+#         thresholds_below_max = all_thresholds < triangle_max_threshold
+#         all_thresholds[~thresholds_above_min] = triangle_min_threshold
+#         all_thresholds[~thresholds_below_max] = triangle_max_threshold
         
-        triangle_mask = img_arr>all_thresholds[:,np.newaxis]
-        return triangle_mask
+#         triangle_mask = img_arr>all_thresholds[:,np.newaxis]
+#         return triangle_mask
     
     def get_edges_from_mask(self,mask):
         """Finds edges from a boolean mask of shape (t,y). Filters out rows of length
@@ -201,7 +194,7 @@ class kymograph_cluster:
             end_above_list.append(end_above)
         return edges_list,start_above_list,end_above_list
     
-    def get_trench_edges_y(self,y_percentiles_smoothed_array,triangle_nbins,triangle_scaling,triangle_max_threshold,triangle_min_threshold,y_min_edge_dist):
+    def get_trench_edges_y(self,y_percentiles_smoothed_array,y_percentile_threshold,y_min_edge_dist):
         """Detects edges in the shape (t,y) smoothed percentile arrays for each input array.
         
         Args:
@@ -214,7 +207,7 @@ class kymograph_cluster:
             list: List containing arrays of edges for each timepoint, filtered for rows that are too small.
         """
         
-        trench_mask_y = self.triangle_threshold(y_percentiles_smoothed_array,triangle_nbins,triangle_scaling,triangle_max_threshold,triangle_min_threshold)
+        trench_mask_y = y_percentiles_smoothed_array>y_percentile_threshold
         edges_list,start_above_list,end_above_list = self.get_edges_from_mask(trench_mask_y)
         return edges_list,start_above_list,end_above_list
     
@@ -436,13 +429,16 @@ class kymograph_cluster:
         """
         fovdf = self.meta_handle.read_df("global",read_metadata=False)
         fovdf = fovdf.loc[(slice(None), slice(self.t_range[0],self.t_range[1])),:]
+        
         filedf = fovdf.reset_index(inplace=False)
         filedf = filedf.set_index(["File Index","Image Index"], drop=True, append=False, inplace=False)
         filedf = filedf.sort_index()
         working_filedf = filedf.loc[file_idx]
         
         timepoint_indices = working_filedf["timepoints"].unique().tolist()
+        print(timepoint_indices)
         image_indices = working_filedf.index.get_level_values("Image Index").unique().tolist()
+        print(image_indices)
         first_idx,last_idx = (timepoint_indices[0],timepoint_indices[-1])
         
         y_drift = drift_orientation_and_initend_future[0][first_idx:last_idx+1]
@@ -481,6 +477,34 @@ class kymograph_cluster:
             else:
                 channel_arr_list.append(cropped_in_y)
         return channel_arr_list,lane_y_coords_list
+    
+#     ---------------------------------------------------------------------------
+# IndexError                                Traceback (most recent call last)
+# <ipython-input-22-3d7806ff059d> in <module>
+# ----> 1 dask_controller.futures['Smoothed X Percentiles: 1'].result()
+
+# ~/miniconda3/lib/python3.7/site-packages/distributed/client.py in result(self, timeout)
+#     218         if self.status == "error":
+#     219             typ, exc, tb = result
+# --> 220             raise exc.with_traceback(tb)
+#     221         elif self.status == "cancelled":
+#     222             raise result
+
+# ~/TrenchRipper/trenchripper/kymograph.py in get_smoothed_x_percentiles()
+#     490             array: A smoothed and background subtracted percentile array of shape (rows,x,t)
+#     491         """
+# --> 492         channel_arr_list,_ = self.crop_y(file_idx,drift_orientation_and_initend_future,padding_y,trench_len_y)
+#     493         cropped_in_y = channel_arr_list[0]
+#     494         if self.invert:
+
+# ~/TrenchRipper/trenchripper/kymograph.py in crop_y()
+#     452             lane_y_coords_list = []
+#     453             for t in range(img_arr.shape[0]):
+# --> 454                 trench_ends_y = drift_corrected_edges[t]
+#     455                 row_list = []
+#     456                 lane_y_coords = []
+    
+    
     
     def get_smoothed_x_percentiles(self,file_idx,drift_orientation_and_initend_future,padding_y,trench_len_y,x_percentile,background_kernel_x,smoothing_kernel_x):
                 
@@ -913,8 +937,7 @@ class kymograph_cluster:
         
         for k,file_idx in enumerate(file_list):
             smoothed_y_future = dask_controller.futures["Smoothed Y Percentiles: " + str(file_idx)]            
-            future = dask_controller.daskclient.submit(self.get_trench_edges_y,smoothed_y_future,self.triangle_nbins,\
-                                                       self.triangle_scaling,self.triangle_max_threshold,self.triangle_min_threshold,\
+            future = dask_controller.daskclient.submit(self.get_trench_edges_y,smoothed_y_future,self.y_percentile_threshold,\
                                                        self.y_min_edge_dist,retries=1)
             
             dask_controller.futures["Y Trench Edges: " + str(file_idx)] = future   
@@ -1201,6 +1224,8 @@ class kymograph_multifov(multifov):
         
         imported_array_list = self.map_to_fovs(self.import_hdf5)
         
+        self.imported_array_list = imported_array_list
+        
         return imported_array_list
         
     def median_filter_2d(self,array,smoothing_kernel):
@@ -1245,28 +1270,6 @@ class kymograph_multifov(multifov):
         y_percentiles_smoothed = (y_percentiles_smoothed - min_qth_percentile)/(max_qth_percentile - min_qth_percentile)
         return y_percentiles_smoothed
     
-    def triangle_threshold(self,img_arr,triangle_nbins,triangle_scaling,triangle_max_threshold,triangle_min_threshold):
-        """Applys a triangle threshold to each timepoint in a (y,t) input array, returning a boolean mask.
-        
-        Args:
-            img_arr (array): Image array to be thresholded.
-            triangle_nbins (int): Number of bins to be used to construct the thresholding
-            histogram.
-            triangle_scaling (float): Factor by which to scale the threshold.
-        
-        Returns:
-            array: Boolean mask produced by the threshold.
-        """
-        all_thresholds = np.apply_along_axis(sk.filters.threshold_triangle,0,img_arr,nbins=triangle_nbins)*triangle_scaling #(t,) array
-        
-        thresholds_above_min = all_thresholds > triangle_min_threshold
-        thresholds_below_max = all_thresholds < triangle_max_threshold
-        all_thresholds[~thresholds_above_min] = triangle_min_threshold
-        all_thresholds[~thresholds_below_max] = triangle_max_threshold
-        
-        triangle_mask = img_arr>all_thresholds
-        return triangle_mask,all_thresholds
-    
     def get_edges_from_mask(self,mask):
         """Finds edges from a boolean mask of shape (y,t). Filters out rows of length
         smaller than y_min_edge_dist.
@@ -1292,7 +1295,7 @@ class kymograph_multifov(multifov):
             end_above_list.append(end_above)
         return edges_list,start_above_list,end_above_list
     
-    def get_trench_edges_y(self,i,y_percentiles_smoothed_list,triangle_nbins,triangle_scaling,triangle_max_threshold,triangle_min_threshold):
+    def get_trench_edges_y(self,i,y_percentiles_smoothed_list,y_percentile_threshold):
         """Detects edges in the shape (y,t) smoothed percentile arrays for each input array.
         
         Args:
@@ -1306,7 +1309,7 @@ class kymograph_multifov(multifov):
             list: List containing arrays of edges for each timepoint, filtered for rows that are too small.
         """
         y_percentiles_smoothed = y_percentiles_smoothed_list[i]
-        trench_mask_y,_ = self.triangle_threshold(y_percentiles_smoothed,triangle_nbins,triangle_scaling,triangle_max_threshold,triangle_min_threshold)
+        trench_mask_y = y_percentiles_smoothed>y_percentile_threshold
         trench_edges_y_list,start_above_list,end_above_list = self.get_edges_from_mask(trench_mask_y)
         return trench_edges_y_list,start_above_list,end_above_list
     
