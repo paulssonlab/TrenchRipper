@@ -1,3 +1,4 @@
+# fmt: off
 import os
 import shutil
 import dask
@@ -24,9 +25,9 @@ class dask_controller: #adapted from Charles' code
         self.cores = cores
         self.working_directory = working_directory
         self.job_extra = job_extra
-        
+
         writedir(working_directory,overwrite=False)
-            
+
     def startdask(self):
         if self.local:
             self.daskclient = Client()
@@ -38,7 +39,7 @@ class dask_controller: #adapted from Charles' code
                                 log_directory=self.working_directory,job_extra=self.job_extra)
 #             self.workers = self.daskcluster.start_workers(self.n_workers)
             self.daskclient = Client(self.daskcluster)
-    
+
     def shutdown(self):
         self.daskclient.restart()
         if not self.local:
@@ -50,15 +51,15 @@ class dask_controller: #adapted from Charles' code
                     os.remove(path)
                 elif os.path.isdir(path):
                     shutil.rmtree(path)
-            
+
     def printprogress(self):
         complete = len([item for item in self.futures if item.status=="finished"])
         print(str(complete) + "/" + str(len(self.futures)))
-        
+
     def displaydashboard(self):
         link = self.daskcluster.dashboard_link
         display(HTML('<a href="' + link +'">Dashboard</a>'))
-        
+
     def mapfovs(self,function,fov_list,retries=0):
         self.function = function
         self.retries = retries
@@ -73,25 +74,25 @@ class dask_controller: #adapted from Charles' code
         self.failed_fovs = [fov for fov,future in self.futures.items() if future.status != 'finished']
         out = self.daskclient.restart()
         self.mapfovs(self.function,self.failed_fovs,retries=self.retries)
-        
+
     def retry_processing(self):
         self.proc_fovs = [fov for fov,future in self.futures.items() if future.status == 'pending']
         out = self.daskclient.restart()
         self.mapfovs(self.function,self.proc_fovs,retries=self.retries)
-        
+
 class hdf5lock:
     def __init__(self,filepath,updateperiod=0.1):
         self.filepath = filepath
         self.lockfile = filepath + ".lock"
         self.updateperiod = updateperiod
-        
+
     def _lock(self):
         while True:
             if not os.path.exists(self.lockfile):
                 open(self.lockfile,'w').close()
                 break
             sleep(self.updateperiod)
-            
+
     def _apply_fn(self,function,iomode,*args,**kwargs):
         try:
             fn_output = function(self.filepath,iomode,*args,**kwargs)
@@ -100,7 +101,7 @@ class hdf5lock:
         except:
             os.remove(self.lockfile)
             raise
-            
+
     def lockedfn(self,function,iomode,*args,**kwargs):
         self._lock()
         fn_output = self._apply_fn(function,iomode,*args,**kwargs)

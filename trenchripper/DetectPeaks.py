@@ -1,3 +1,4 @@
+# fmt: off
 # %load ./../functions/detect_peaks.py
 """Detect peaks in data based on their amplitude and other features."""
 
@@ -49,8 +50,8 @@ def detect_peaks(x, mph=None, mpd=1, threshold=0, relative_threshold=1, edge='fa
     -----
     The detection of valleys instead of peaks is performed internally by simply
     negating the data: `ind_valleys = detect_peaks(-x)`
-    
-    The function can handle NaN's 
+
+    The function can handle NaN's
 
     See this IPython Notebook [1]_.
 
@@ -126,7 +127,7 @@ def detect_peaks(x, mph=None, mpd=1, threshold=0, relative_threshold=1, edge='fa
     if ind.size and threshold > 0:
         dx = np.max(np.vstack([x[ind]-x[ind-1], x[ind]-x[ind+1]]), axis=0)
         ind = np.delete(ind, np.where(dx < threshold)[0])
-    
+
     # Remove peaks that are not greater than a multiple of their nearest neighbours
     if ind.size and relative_threshold > 1:
         dx = np.max(np.vstack([x[ind]/x[ind-3], x[ind]/x[ind+3]]), axis=0)
@@ -136,7 +137,7 @@ def detect_peaks(x, mph=None, mpd=1, threshold=0, relative_threshold=1, edge='fa
         dx = x[ind+1] - x[ind-1]
         dx2 = x[ind+2] - x[ind-1]
         dxi = np.any([dx < offset_threshold, dx2 < offset_threshold],axis=0)
-        ind = np.delete(ind, np.where(np.invert(dxi))[0])    
+        ind = np.delete(ind, np.where(np.invert(dxi))[0])
 
     # detect small peaks closer than minimum peak distance
     if ind.size and mpd > 1:

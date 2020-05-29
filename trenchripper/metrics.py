@@ -1,3 +1,4 @@
+# fmt: off
 import numpy as np
 import skimage as sk
 
@@ -31,7 +32,7 @@ def object_f_scores(true_mask,pred_mask,eps = (10**-5)):
         Precision = np.array([0. for i in range(num_cells)])
         Recall = np.array([0. for i in range(num_cells)])
         f_score = np.array([0. for i in range(num_cells)])
-        
+
         return Precision,Recall,f_score
     else:
         return np.array([np.NaN]),np.array([np.NaN]),np.array([np.NaN])

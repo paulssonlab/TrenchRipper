@@ -1,3 +1,4 @@
+# fmt: off
 import cv2
 import os
 import numpy as np
@@ -5,17 +6,16 @@ import matplotlib.pyplot as plt
 from skimage.util import pad
 
 def find_seed_image(image_stack, max_poi_std=5):
-    """ Find a suitable image for segmentation from an image stack by checking interest point
-    matching to neighbouring timepoints (out of focus or very drifted timepoints should not
-    get good matches). We measure this by looking at the standard deviation of interest point
-    matches.
+    """Find a suitable image for segmentation from an image stack by checking
+    interest point matching to neighbouring timepoints (out of focus or very
+    drifted timepoints should not get good matches). We measure this by looking
+    at the standard deviation of interest point matches.
 
     Args:
         image_stack (numpy.ndarray, t x y x x): Image stack
         max_poi_std: Standard deviation in Euclidean distance between interest points
     Returns:
         seed_index (int): Timepoint to use as seed
-    
     """
     num_points = image_stack.shape[0]
     for i in range(num_points-1):
@@ -30,13 +30,13 @@ def find_seed_image(image_stack, max_poi_std=5):
     return seed_index
 
 def scale_image(im):
-    """ Stretch image intensities to fill whole histogram and convert to 8bit for opencv
+    """Stretch image intensities to fill whole histogram and convert to 8bit
+    for opencv.
 
     Args:
         im: image to scale
     Returns:
         im_rescaled: scaled image
-
     """
 
     # Get min and max
@@ -50,13 +50,14 @@ def scale_image(im):
     return im_rescaled
 
 def get_orb_pois(im1, im2, max_interest_points= 750, match_threshold=0.1, plot=False, pad_width=15):
-    """ Find matching points of interest between two images according to ORB algorithm
+    """Find matching points of interest between two images according to ORB
+    algorithm.
 
     Args:
         im1 (numpy.ndarray, 8-bit integer): first image (y x x)
         im2 (numpy.ndarray, 8-bit integer): second image (y x x)
         max_interest_points (int): Maximum number of points to recognize using ORB algorithm
-        match_threshold (float): The fraction of closest matches in Euclidean distance 
+        match_threshold (float): The fraction of closest matches in Euclidean distance
     Returns:
         points1 (numpy.ndarray, int): List of filtered points in image 1 that matched image 2 (n x 2)
         points2 (numpy.ndarray, int): List of filtered points in image 2 that matched image 1 (n x 2)
@@ -82,19 +83,19 @@ def get_orb_pois(im1, im2, max_interest_points= 750, match_threshold=0.1, plot=F
     distances = [match.distance for match in matches]
     # Get std
     std_distance = np.std(distances)
-    
+
     if plot:
         im3 = cv2.drawMatches(im1_scaled, keypoints1, im2_scaled, keypoints2, matches, None)
         plt.figure(figsize=(20, 10))
         plt.imshow(im3)
         plt.show()
 
-    
+
     # Extract location of good matches
     points1 = np.zeros((len(matches), 2), dtype=np.float32)
     points2 = np.zeros((len(matches), 2), dtype=np.float32)
 
-    # Get points 
+    # Get points
     for i, match in enumerate(matches):
         points1[i, :] = keypoints1[match.queryIdx].pt
         points2[i, :] = keypoints2[match.trainIdx].pt
@@ -104,8 +105,8 @@ def get_orb_pois(im1, im2, max_interest_points= 750, match_threshold=0.1, plot=F
     return points1, points2, std_distance
 
 def find_drift_poi(points1, points2):
-    """ Find the best fit for the rotation and translation that map points1 to points2 using 
-    the RANSAC algorithm (fitting robust to outliers).
+    """Find the best fit for the rotation and translation that map points1 to
+    points2 using the RANSAC algorithm (fitting robust to outliers).
 
     Args:
         points1 (numpy.ndarray, int): list of points (n x 2)
@@ -117,14 +118,15 @@ def find_drift_poi(points1, points2):
     h, _ = cv2.estimateAffinePartial2D(points1,points2)
     # Extract x and y translation
     return np.array([h[0,2], h[1,2]])
-  
+
 def find_template(reference, check, match_threshold=0.1,window_height=400, window_width=200):
-    """ Find template region (fiduciary markers on the mother machine) by cluster of interest points
+    """Find template region (fiduciary markers on the mother machine) by
+    cluster of interest points.
 
     Args:
-        reference (numpy.ndarray): Reference image from which to extract the template 
+        reference (numpy.ndarray): Reference image from which to extract the template
         check (numpy.ndarray): Check image to see that the template matches to another timepoint
-        match_threshold (float): The fraction of closest matches in Euclidean distance 
+        match_threshold (float): The fraction of closest matches in Euclidean distance
         window_height (int): Height of template patch to extract
         window_width (int): Width of template patch to extract
     Returns:
@@ -144,7 +146,7 @@ def find_template(reference, check, match_threshold=0.1,window_height=400, windo
     return template, top_left
 
 def find_drift_template(template, top_left, im2):
-    """ Calculate drift using template matching
+    """Calculate drift using template matching.
 
     Args:
         template(numpy.ndarray): template patch

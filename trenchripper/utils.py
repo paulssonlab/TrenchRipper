@@ -1,3 +1,4 @@
+# fmt: off
 import numpy as np
 import h5py
 import shutil
@@ -7,14 +8,14 @@ import h5py_cache
 
 import pandas as pd
 from copy import deepcopy
-    
+
 class multifov():
     def __init__(self,fov_list):
         """Write later...
-            
+
         Args:
             input_file_prefix (string): File prefix for all input hdf5 files of the form
-            [input_file_prefix][number].hdf5 
+            [input_file_prefix][number].hdf5
             all_channels (list): list of strings corresponding to the different image channels
             available in the input hdf5 file, with the channel used for segmenting trenches in
             the first position. NOTE: these names must match those of the input hdf5 file datasets.
@@ -24,15 +25,15 @@ class multifov():
         self.num_fovs = len(fov_list)
 
     def map_to_fovs(self,func,*args,**kargs):
-        """Handler for performing steps of analysis across multiple fovs. Appends output
-        of a function to a list of outputs for each fov.
-        
+        """Handler for performing steps of analysis across multiple fovs.
+        Appends output of a function to a list of outputs for each fov.
+
         Args:
             func (function): Function to apply to each fov. NOTE: Must be written
             to accept the fov index i as the first argument.
             *args: Arguments to pass to the function.
             **kargs: Keyword arguments to pass to the function.
-        
+
         Returns:
             list: List of function outputs, one for each fov.
         """
@@ -72,11 +73,11 @@ class kymo_handle():
 class pandas_hdf5_handler:
     def __init__(self,hdf5_path):
         self.hdf5_path = hdf5_path
-        
+
     def keys(self):
         with pd.HDFStore(self.hdf5_path,"r") as store:
             return store.keys()
-        
+
     def write_df(self,key,df,metadata=None):
         with pd.HDFStore(self.hdf5_path) as store:
             if "/" + key in store.keys():
@@ -84,13 +85,13 @@ class pandas_hdf5_handler:
             store.put(key, df)
             if metadata is not None:
                 store.get_storer(key).attrs.metadata = metadata
-    def read_df(self,key,read_metadata=False):           
+    def read_df(self,key,read_metadata=False):
         with pd.HDFStore(self.hdf5_path,"r") as store:
             df = store.get(key)
             if read_metadata:
                 df.metadata = store.get_storer(key).attrs.metadata
             return df
-        
+
 def writedir(directory,overwrite=False):
     if overwrite:
         if os.path.exists(directory):

@@ -1,3 +1,4 @@
+# fmt: off
 import numpy as np
 import skimage as sk
 import scipy as sp
@@ -7,8 +8,11 @@ import copy
 import pickle
 import shutil
 import pandas as pd
+import dask.dataframe as dd
+from scipy import ndimage as ndi
 
-from skimage import measure,feature,segmentation,future,util,morphology,filters,exposure
+from skimage import measure,feature,segmentation,future,util,morphology,filters,exposure,transform
+from skimage.segmentation import watershed
 from .utils import kymo_handle,pandas_hdf5_handler,writedir
 from .trcluster import hdf5lock
 from time import sleep
@@ -17,38 +21,30 @@ import scipy.ndimage.morphology as morph
 from dask.distributed import worker_client
 from pandas import HDFStore
 
-
 from matplotlib import pyplot as plt
 
-
 class fluo_segmentation:
-    def __init__(self,scale_timepoints=False,scaling_percentage=0.9,smooth_sigma=0.75,bit_max=0,wrap_pad=3,hess_pad=6,min_obj_size=30,cell_mask_method='global',global_threshold=1000,\
-                 cell_otsu_scaling=1.,local_otsu_r=15,edge_threshold_scaling=1.,threshold_step_perc=0.1,threshold_perc_num_steps=2,convex_threshold=0.8):
+    def __init__(self,bit_max=0,scale_timepoints=False,scaling_percentile=0.9,img_scaling=1.,smooth_sigma=0.75,niblack_scaling=1.,\
+                 hess_pad=6,global_threshold=25,cell_otsu_scaling=1.,local_otsu_r=15,min_obj_size=30,distance_threshold=2):
+        self.bit_max = bit_max
         
         self.scale_timepoints=scale_timepoints
-        self.scaling_percentage=scaling_percentage
+        self.scaling_percentile=scaling_percentile
+        
+        self.img_scaling = img_scaling
+
         self.smooth_sigma = smooth_sigma
-        self.bit_max = bit_max
-        self.wrap_pad = wrap_pad
+        
+        self.niblack_scaling = niblack_scaling
         self.hess_pad = hess_pad
-        self.min_obj_size = min_obj_size
+        
         self.global_threshold = global_threshold
-        self.cell_mask_method = cell_mask_method
         self.cell_otsu_scaling = cell_otsu_scaling
         self.local_otsu_r = local_otsu_r
-        self.edge_threshold_scaling = edge_threshold_scaling
-        self.threshold_step_perc = threshold_step_perc
-        self.threshold_perc_num_steps = threshold_perc_num_steps
-        self.convex_threshold = convex_threshold
-    
-    def scale_kymo(self,wrap_arr,percentile):
-        perc_t = np.percentile(wrap_arr[:].reshape(wrap_arr.shape[0],-1),percentile,axis=1)
-        norm_perc_t = perc_t/np.max(perc_t)
-        scaled_arr = wrap_arr.astype(float)/norm_perc_t[:,np.newaxis,np.newaxis]
-        scaled_arr[scaled_arr>255.] = 255.
-        scaled_arr = scaled_arr.astype("uint8")
-        return scaled_arr
-    
+        self.min_obj_size = min_obj_size
+        
+        self.distance_threshold = distance_threshold
+        
     def to_8bit(self,img_arr,bit_max=None):
         img_max = np.max(img_arr)+0.0001
         if bit_max is None:
@@ -61,211 +57,120 @@ class fluo_segmentation:
         norm_byte_array = sk.img_as_ubyte(norm_array)
         return norm_byte_array
     
-    def preprocess_img(self,img_arr,sigma=1.,bit_max=0,scale_timepoints=False,scaling_percentage=None):
-        img_smooth = copy.copy(img_arr)
-        for t in range(img_arr.shape[0]):
-            img_smooth[t] = self.to_8bit(sk.filters.gaussian(img_arr[t],sigma=sigma,preserve_range=True,mode='reflect'),bit_max=bit_max)
-        if scale_timepoints:
-            img_smooth = self.scale_kymo(img_smooth,scaling_percentage)
+    def scale_kymo(self,wrap_arr,percentile):
+        perc_t = np.percentile(wrap_arr[:].reshape(wrap_arr.shape[0],-1),percentile,axis=1)
+        norm_perc_t = perc_t/np.max(perc_t)
+        scaled_arr = wrap_arr.astype(float)/norm_perc_t[:,np.newaxis,np.newaxis]
+        scaled_arr[scaled_arr>255.] = 255.
+        scaled_arr = scaled_arr.astype("uint8")
+        return scaled_arr
+    
+    def get_eig_img(self,img_arr,edge_padding=6):
+        inverted = sk.util.invert(img_arr)
+        del img_arr
+        inverted = np.pad(inverted, edge_padding, 'reflect')
+        hessian = sk.feature.hessian_matrix(inverted,order="rc")
+        del inverted
+        eig_img = sk.feature.hessian_matrix_eigvals(hessian)
+        del hessian
+        eig_img = np.min(eig_img,axis=0)
+        eig_img = eig_img[edge_padding:-edge_padding,edge_padding:-edge_padding]
+        max_val,min_val = np.max(eig_img),np.min(eig_img)
+        eig_img = self.to_8bit(eig_img)
+        return eig_img
+    
+    def get_eig_mask(self,eig_img,niblack_scaling=1.):
+        eig_thr = sk.filters.threshold_niblack(eig_img)*niblack_scaling
+        eig_mask = eig_img>eig_thr
+        return eig_mask
+    
+    def get_cell_mask(self,img_arr,global_threshold=50,cell_otsu_scaling=1.,local_otsu_r=15,min_obj_size=30):
+        otsu_selem = sk.morphology.disk(local_otsu_r)
+        thr = sk.filters.rank.otsu(img_arr,otsu_selem)
+        del otsu_selem
+        cell_mask = (img_arr>thr)*(img_arr>global_threshold)
+        del img_arr
+        cell_mask = sk.morphology.remove_small_objects(cell_mask,min_size=min_obj_size)
+        cell_mask = sk.morphology.remove_small_holes(cell_mask)
         
-        return img_smooth
-
-#     def cell_region_mask(self,img_arr,method='global',global_scaling=1.,cell_otsu_scaling=1.,local_otsu_r=15):
-    def cell_region_mask(self,img_arr,method='global',global_threshold=1000,cell_otsu_scaling=1.,local_otsu_r=15):
-        global_mask_kymo = []
-        for t in range(img_arr.shape[0]):
-            cell_mask = img_arr[t,:,:]>global_threshold
-            global_mask_kymo.append(cell_mask)
-        global_mask_kymo = np.array(global_mask_kymo)
-                    
-        if method == 'global':
-            return global_mask_kymo
-                    
-        elif method == 'local':
-            otsu_selem = sk.morphology.disk(local_otsu_r)
-            local_mask_kymo = []
-            for t in range(img_arr.shape[0]):
-                above_threshold = np.any(global_mask_kymo[t,:,:]) # time saving
-                if above_threshold:
-                    local_thr_arr = sk.filters.rank.otsu(img_arr[t,:,:], otsu_selem)
-                    local_mask = img_arr[t,:,:]>local_thr_arr
-                else:
-                    local_mask = np.zeros(img_arr[t,:,:].shape,dtype=bool)
-                local_mask_kymo.append(local_mask)
-            local_mask_kymo = np.array(local_mask_kymo)
-
-            final_cell_mask = global_mask_kymo*local_mask_kymo
-            del global_mask_kymo
-            del local_mask_kymo
-            return final_cell_mask
-            
-        else:
-            print("no valid cell threshold method chosen!!!")
-                
-    def hessian_contrast_enc(self,img_arr,edge_padding=0):
-        img_arr = np.pad(img_arr, edge_padding, 'reflect')
-        hessian = sk.feature.hessian_matrix(img_arr,order="rc")
-        eigvals = sk.feature.hessian_matrix_eigvals(hessian)
-        min_eigvals = np.min(eigvals,axis=0)
-        if edge_padding>0:
-            min_eigvals = min_eigvals[edge_padding:-edge_padding,edge_padding:-edge_padding]
-        return min_eigvals
-    
-    def find_mask(self,cell_local_mask,min_eigvals,edge_threshold,min_obj_size=30):
-        edge_mask = min_eigvals>edge_threshold
-        composite_mask = cell_local_mask*edge_mask
-        composite_mask = sk.morphology.remove_small_objects(composite_mask,min_size=min_obj_size)
-        composite_mask = sk.morphology.remove_small_holes(composite_mask)
-        return composite_mask
-    
-    def compute_convexity(self,curr_obj):    
-        area = np.sum(curr_obj)
-        convex_hull = sk.morphology.convex_hull_image(curr_obj)
-        convex_hull_area = np.sum(convex_hull)
-        convexity = area/convex_hull_area
-        return convexity
-    
-    def get_object_coords(self,obj_thresh,padding=1):    
-        x_dim_max = np.max(obj_thresh,axis=0)
-        x_indices = np.where(x_dim_max)[0]
-        x_min = max(np.min(x_indices)-padding,0)
-        x_max = min(np.max(x_indices)+padding+1,obj_thresh.shape[1])
-
-        y_dim_max = np.max(obj_thresh,axis=1)
-        y_indices = np.where(y_dim_max)[0]
-        y_min = max(np.min(y_indices)-padding,0)
-        y_max = min(np.max(y_indices)+padding+1,obj_thresh.shape[0])
-
-        return x_min,x_max,y_min,y_max
-    
-    def crop_object(self,conn_comp,obj_idx,padding=1):
-        obj_thresh = (conn_comp==obj_idx)
-        x_min,x_max,y_min,y_max = self.get_object_coords(obj_thresh,padding=padding)
-        curr_obj = obj_thresh[y_min:y_max,x_min:x_max]
-        return curr_obj
-
-    def get_image_weights(self,conn_comp,padding=1):
-        objects = np.unique(conn_comp)[1:]
-        conv_weights = []
-        for obj_idx in objects:
-            curr_obj = self.crop_object(conn_comp,obj_idx,padding=padding)
-            conv_weight = self.compute_convexity(curr_obj)            
-            conv_weights.append(conv_weight)
-        return np.array(conv_weights)
-    
-    def make_weight_arr(self,conn_comp,weights):
-        weight_arr = np.zeros(conn_comp.shape)
-        for i,obj_weight in enumerate(weights):
-            obj_idx = i+1
-            obj_mask = (conn_comp==obj_idx)
-            weight_arr[obj_mask] = obj_weight
-        return weight_arr
-
-    def get_mid_threshold_arr(self,wrap_eig,edge_threshold_scaling=1.,padding=3):
-        edge_threshold_kymo = []
-        for t in range(wrap_eig.shape[0]):
-            edge_threshold = sk.filters.threshold_otsu(wrap_eig[t])
-            edge_thr_arr = edge_threshold*np.ones(wrap_eig.shape[1:],dtype='uint8')
-            edge_threshold_kymo.append(edge_thr_arr)
-        edge_threshold_kymo = np.array(edge_threshold_kymo)*edge_threshold_scaling
-#         edge_threshold_kymo = np.moveaxis(edge_threshold_kymo,(0,1,2),(2,0,1))
-
-        edge_thr_kymo = kymo_handle()
-        edge_thr_kymo.import_wrap(edge_threshold_kymo,scale=False)
-        mid_threshold_arr = edge_thr_kymo.return_unwrap(padding=padding)
-        return mid_threshold_arr
-
-    def get_scores(self,cell_mask,min_eigvals,mid_threshold_arr,threshold_step_perc=0.05,threshold_perc_num_steps=2,min_obj_size=30):
-        threshold_percs = [1. + threshold_step_perc*step for step in range(-threshold_perc_num_steps,threshold_perc_num_steps+1)]
-        edge_thresholds = [mid_threshold_arr*threshold_perc for threshold_perc in threshold_percs]
-        conv_weight_arrs = []
-        for edge_threshold in edge_thresholds:
-            composite_mask = self.find_mask(cell_mask,min_eigvals,edge_threshold,min_obj_size=min_obj_size)
-            conn_comp = sk.measure.label(composite_mask,neighbors=4,connectivity=2)
-            conv_weights = self.get_image_weights(conn_comp)
-            conv_weight_arr = self.make_weight_arr(conn_comp,conv_weights)        
-            conv_weight_arrs.append(conv_weight_arr)
-        conv_weight_arrs = np.array(conv_weight_arrs)
-        conv_max_merged = np.max(conv_weight_arrs,axis=0)
-        return conv_max_merged
+        return cell_mask
         
     def segment(self,img_arr): #img_arr is t,y,x
-#         input_kymo = kymo_handle()
-#         input_kymo.import_wrap(img_arr,scale=self.scale_timepoints,scale_perc=self.scaling_percentage)
         t_tot = img_arr.shape[0]
-        working_img = self.preprocess_img(img_arr,sigma=self.smooth_sigma,bit_max=self.bit_max,\
-                                         scale_timepoints=self.scale_timepoints,scaling_percentage=self.scaling_percentage) #8_bit 
-                
-        inverted = np.array([sk.util.invert(working_img[t]) for t in range(working_img.shape[0])])
-        min_eigvals = np.array([self.to_8bit(self.hessian_contrast_enc(inverted[t],self.hess_pad)) for t in range(inverted.shape[0])])
-        del inverted        
-        cell_mask = self.cell_region_mask(working_img,method=self.cell_mask_method,global_threshold=self.global_threshold,cell_otsu_scaling=self.cell_otsu_scaling,local_otsu_r=self.local_otsu_r)
-                
-        mid_threshold_arr = self.get_mid_threshold_arr(min_eigvals,edge_threshold_scaling=self.edge_threshold_scaling,padding=self.wrap_pad)
+        img_arr = self.to_8bit(img_arr,self.bit_max)
+        if self.scale_timepoints:
+            img_arr = self.scale_kymo(img_arr,self.scaling_percentile)
         
-        cell_mask_kymo = kymo_handle()
-        cell_mask_kymo.import_wrap(cell_mask)
-        cell_mask = cell_mask_kymo.return_unwrap(padding=self.wrap_pad)
+        input_kymo = kymo_handle()
+        input_kymo.import_wrap(img_arr)
+        del img_arr
         
-        min_eigvals_kymo = kymo_handle()
-        min_eigvals_kymo.import_wrap(min_eigvals)
-        min_eigvals = min_eigvals_kymo.return_unwrap(padding=self.wrap_pad)
+        input_kymo = input_kymo.return_unwrap()
+        original_shape = input_kymo.shape 
+        input_kymo = transform.rescale(input_kymo,self.img_scaling,anti_aliasing=False, preserve_range=True).astype("uint8")
+        input_kymo = sk.filters.gaussian(input_kymo,sigma=self.smooth_sigma,preserve_range=True,mode='reflect').astype("uint8")
         
-        convex_scores = self.get_scores(cell_mask,min_eigvals,mid_threshold_arr,\
-                                          threshold_step_perc=self.threshold_step_perc,threshold_perc_num_steps=self.threshold_perc_num_steps,\
-                                                  min_obj_size=self.min_obj_size)
+        eig_img = self.get_eig_img(input_kymo,edge_padding=self.hess_pad)
+        eig_mask = self.get_eig_mask(eig_img,niblack_scaling=self.niblack_scaling)
+        del eig_img
+        
+        cell_mask = self.get_cell_mask(input_kymo,global_threshold=self.global_threshold,\
+                    cell_otsu_scaling=self.cell_otsu_scaling,local_otsu_r=self.local_otsu_r,\
+                    min_obj_size=self.min_obj_size)
+        del input_kymo
+        
+        dist_img = ndi.distance_transform_edt(cell_mask).astype("uint8")
+        dist_mask = dist_img>self.distance_threshold
+        marker_mask = dist_mask*eig_mask
+        del dist_mask
+        marker_mask = sk.measure.label(marker_mask)
+        
+        output_labels = watershed(-dist_img, markers=marker_mask, mask=cell_mask)
+
+        del dist_img
+        del marker_mask
         del cell_mask
-        del min_eigvals
-        del mid_threshold_arr
-
-        final_mask = (convex_scores>self.convex_threshold)
-        
-        final_mask = sk.morphology.remove_small_objects(final_mask,min_size=self.min_obj_size)
-        final_mask = sk.morphology.remove_small_holes(final_mask)
-
+        output_labels = sk.transform.resize(output_labels,original_shape,order=0,anti_aliasing=False, preserve_range=True).astype("uint32")
+         
         output_kymo = kymo_handle()
-        output_kymo.import_unwrap(final_mask,t_tot,padding=self.wrap_pad)
-        segmented = output_kymo.return_wrap()
-        return segmented
+        output_kymo.import_unwrap(output_labels,t_tot)
+        del output_labels
+        output_kymo = output_kymo.return_wrap()
+        return output_kymo
     
-
 class fluo_segmentation_cluster(fluo_segmentation):
-    def __init__(self,headpath,paramfile=True,seg_channel="",scale_timepoints=False,scaling_percentage=0.9,smooth_sigma=0.75,bit_max=0,wrap_pad=0,\
-                 hess_pad=6,min_obj_size=30,cell_mask_method='local',global_threshold=255,cell_otsu_scaling=1.,local_otsu_r=15,\
-                 edge_threshold_scaling=1.,threshold_step_perc=.1,threshold_perc_num_steps=2,convex_threshold=0.8):
-        
+    def __init__(self,headpath,paramfile=True,seg_channel="",bit_max=0,scale_timepoints=False,scaling_percentile=0.9,\
+                 img_scaling=1.,smooth_sigma=0.75,niblack_scaling=1.,hess_pad=6,global_threshold=25,cell_otsu_scaling=1.,\
+                 local_otsu_r=15,min_obj_size=30,distance_threshold=2):
+
         if paramfile:
             parampath = headpath + "/fluorescent_segmentation.par"
             with open(parampath, 'rb') as infile:
                 param_dict = pickle.load(infile)
-            
-            scale_timepoints = param_dict["Scale Fluorescence?"]
-            scaling_percentage = param_dict["Scaling Percentile:"]
-            seg_channel = param_dict["Segmentation Channel:"]
-            smooth_sigma = param_dict["Gaussian Kernel Sigma:"]
-            bit_max = param_dict['8 Bit Maximum:']
-            min_obj_size = param_dict["Minimum Object Size:"]
-            cell_mask_method = param_dict["Cell Mask Thresholding Method:"]
-            global_threshold = param_dict["Global Threshold:"]
-            cell_otsu_scaling = param_dict["Cell Threshold Scaling:"]
-            local_otsu_r = param_dict["Local Otsu Radius:"]
-            edge_threshold_scaling = param_dict["Edge Threshold Scaling:"]
-            threshold_step_perc = param_dict["Threshold Step Percent:"]
-            threshold_perc_num_steps = param_dict["Number of Threshold Steps:"]
-            convex_threshold = param_dict["Convexity Threshold:"]
-        
-        super(fluo_segmentation_cluster, self).__init__(scale_timepoints=scale_timepoints,scaling_percentage=scaling_percentage,smooth_sigma=smooth_sigma,bit_max=bit_max,\
-                                                        wrap_pad=wrap_pad,hess_pad=hess_pad,min_obj_size=min_obj_size,cell_mask_method=cell_mask_method,\
-                                                        global_threshold=global_threshold,cell_otsu_scaling=cell_otsu_scaling,local_otsu_r=local_otsu_r,\
-                                                        edge_threshold_scaling=edge_threshold_scaling,threshold_step_perc=threshold_step_perc,\
-                                                        threshold_perc_num_steps=threshold_perc_num_steps,convex_threshold=convex_threshold)
+                
+        seg_channel = param_dict["Segmentation Channel:"]
+        bit_max = param_dict['8 Bit Maximum:']
+        scale_timepoints = param_dict['Scale Fluorescence?']
+        scaling_percentile = param_dict["Scaling Percentile:"]
+        img_scaling = param_dict["Image Scaling Factor:"]
+        smooth_sigma = param_dict['Gaussian Kernel Sigma:']
+        global_threshold = param_dict['Global Threshold:']
+        cell_otsu_scaling = param_dict['Cell Threshold Scaling:']
+        local_otsu_r = param_dict['Local Otsu Radius:']
+        min_obj_size = param_dict['Minimum Object Size:']        
+        niblack_scaling = param_dict['Niblack Scaling:']
+        distance_threshold = param_dict['Distance Threshold:']
+                
+        super(fluo_segmentation_cluster, self).__init__(bit_max=bit_max,scale_timepoints=scale_timepoints,scaling_percentile=scaling_percentile,\
+                                                        img_scaling=img_scaling,smooth_sigma=smooth_sigma,niblack_scaling=niblack_scaling,\
+                                                        hess_pad=hess_pad,global_threshold=global_threshold,cell_otsu_scaling=cell_otsu_scaling,\
+                                                        local_otsu_r=local_otsu_r,min_obj_size=min_obj_size,distance_threshold=distance_threshold)
 
         self.headpath = headpath
         self.seg_channel = seg_channel
         self.kymographpath = headpath + "/kymograph"
         self.fluorsegmentationpath = headpath + "/fluorsegmentation"
-        self.metapath = headpath + "/metadata.hdf5"
-        self.meta_handle = pandas_hdf5_handler(self.metapath)
+        self.metapath = headpath + "/kymograph/metadata"
 
     def generate_segmentation(self,file_idx):
         with h5py.File(self.kymographpath + "/kymograph_" + str(file_idx) + ".hdf5","r") as input_file:
@@ -278,27 +183,35 @@ class fluo_segmentation_cluster(fluo_segmentation):
                 del trench_array
         trench_output = np.concatenate(trench_output,axis=0)
         with h5py.File(self.fluorsegmentationpath + "/segmentation_" + str(file_idx) + ".hdf5", "w") as h5pyfile:
-            hdf5_dataset = h5pyfile.create_dataset("data", data=trench_output, dtype=bool)
-        return "Done"
+            hdf5_dataset = h5pyfile.create_dataset("data", data=trench_output, dtype="uint16")
+        return file_idx
+    
+    def segmentation_completed(self,seg_future):
+        return 0
 
     def dask_segment(self,dask_controller):
         writedir(self.fluorsegmentationpath,overwrite=True)
         dask_controller.futures = {}
-        
-        kymodf = self.meta_handle.read_df("kymograph",read_metadata=True)
-        file_list = kymodf["File Index"].unique().tolist()
+
+        kymodf = dd.read_parquet(self.metapath).persist()
+        file_list = kymodf["File Index"].unique().compute().tolist()
         num_file_jobs = len(file_list)
-                
+
         random_priorities = np.random.uniform(size=(num_file_jobs,))
         for k,file_idx in enumerate(file_list):
             priority = random_priorities[k]
-            
-            future = dask_controller.daskclient.submit(self.generate_segmentation,file_idx,retries=1,priority=priority)
-            dask_controller.futures["Segmentation: " + str(file_idx)] = future
 
+            future = dask_controller.daskclient.submit(self.generate_segmentation,file_idx,retries=0,priority=priority)
+            dask_controller.futures["Segmentation: " + str(file_idx)] = future
+        for k,file_idx in enumerate(file_list):
+            priority = random_priorities[k]
+
+            future = dask_controller.daskclient.submit(self.segmentation_completed,dask_controller.futures["Segmentation: " + str(file_idx)],retries=0,priority=priority)
+            dask_controller.futures["Segmentation Completed: " + str(file_idx)] = future
+        gathered_tasks = dask_controller.daskclient.gather([dask_controller.futures["Segmentation Completed: " + str(file_idx)] for file_idx in file_list],errors="skip")
 
 class phase_segmentation:
-    """ Segmentation algorithm for high mag phase images
+    """Segmentation algorithm for high mag phase images.
 
     Attributes:
         init_niblack_k (float): k parameter for niblack thresholding of cells
@@ -314,10 +227,9 @@ class phase_segmentation:
         max_perc_contrast (float): Histogram percentile above which we cap intensities
                                 (makes thresholding more robust)
         wrap_pad (int):
-
     """
     def __init__(self, init_niblack_k=-0.5, maxima_niblack_k=-0.55, init_smooth_sigma=4, maxima_smooth_sigma=4, init_niblack_window_size=13, maxima_niblack_window_size=13, min_cell_size=150, deviation_from_median=0.3, max_perc_contrast=97, wrap_pad = 0):
-        
+
         self.init_niblack_k = -init_niblack_k
         self.maxima_niblack_k = -maxima_niblack_k
         self.init_smooth_sigma = init_smooth_sigma
@@ -328,9 +240,9 @@ class phase_segmentation:
         self.deviation_from_median = deviation_from_median
         self.max_perc_contrast= max_perc_contrast
         self.wrap_pad = 0
-        
+
     def remove_large_objects(self, conn_comp, max_size=4000):
-        """ Remove segmented regions that are too large
+        """Remove segmented regions that are too large.
 
         Args:
             conn_comp(numpy.ndarray, int): Segmented connected components where each
@@ -347,16 +259,15 @@ class phase_segmentation:
         too_big_mask = too_big[conn_comp]
         out[too_big_mask] = 0
         return out
-    
+
     def to_8bit(self,img_arr,bit_max=None):
-        """ Rescale image and convert to 8bit
+        """Rescale image and convert to 8bit.
 
         Args:
             img_arr(numpy.ndarray, int): input image to be rescaled
             bit_max(int): maximum value for intensities
         Returns:
             norm_byte_array(numpy.ndarray, int): 8-bit image
-
         """
         # Set maximum value
         img_max = np.max(img_arr)+0.0001
@@ -371,13 +282,13 @@ class phase_segmentation:
         # Cast as 8bit image
         norm_byte_array = sk.img_as_ubyte(norm_array)
         return norm_byte_array
-    
+
     def preprocess_img(self,img_arr,sigma=1.,bit_max=0):
-        """ Convert image stack to 8bit and smooth with gaussian filter
+        """Convert image stack to 8bit and smooth with gaussian filter.
 
         Args:
             img_arr(numpy.ndarray, int): input image stack (t x y x x)
-            sigma(float): 
+            sigma(float):
             bit_max(int): maximum value for intensities
         Returns:
             img_smooth(numpy.ndarray, int): smoothed 8-bit image stack (t x y x x)
@@ -386,9 +297,9 @@ class phase_segmentation:
         for t in range(img_arr.shape[0]):
             img_smooth[t] = self.to_8bit(sk.filters.gaussian(img_arr[t],sigma=sigma,preserve_range=True,mode='reflect'),bit_max=bit_max)
         return img_smooth
-    
+
     def detect_rough_trenches(self, img, show_plots=False):
-        """ Get rough estimate of where the trench is using otsu thresholding
+        """Get rough estimate of where the trench is using otsu thresholding.
 
         Args:
             img (numpy.ndarray, int): Kymograph image to segment
@@ -405,16 +316,16 @@ class phase_segmentation:
             img_filled = sk.morphology.reconstruction(seed, img, selem=strel, method='erosion')
             img_filled = img_filled.astype(bool)
             return img_filled
-    
+
         # Throw out intensity outliers
         max_val = np.percentile(img,self.max_perc_contrast)
         img_contrast = sk.exposure.rescale_intensity(img, in_range=(0,max_val))
-        
+
         # Median filter to remove speckle
 #         img_median = mh.median_filter(img_contrast,Bc=np.ones((2,2)))
-        
+
         img_median = sk.filters.median(img_contrast,mask=np.ones((2,2)))
-        
+
         pad_size = 6
         img_median = np.pad(img_median, ((0, 0), (pad_size, pad_size)), "minimum")
         # Edge detection (will pick up trench edges and cell edges)
@@ -429,8 +340,8 @@ class phase_segmentation:
         img_opened = morph.binary_opening(img_filled, structure = np.ones((1,5)),iterations=1)
         img_closed = morph.binary_closing(img_opened, structure = np.ones((3,3)),iterations=6)
         img_drop_filled = morph.binary_dilation(img_closed,structure=dilation_kernel, iterations=5)
-        
-        
+
+
 
 #         # Close gaps in between
 #         img_close = morph.binary_closing(img_otsu, structure = np.ones((3,3)),iterations=6)
@@ -440,9 +351,9 @@ class phase_segmentation:
 #         img_filled = fill_holes(img_otsu)
 #         img_open = morph.binary_opening(img_filled, structure = np.ones((3,3)),iterations=2)
         trench_masks = morph.binary_erosion(img_drop_filled, structure = np.ones((1,3)),iterations=3)[:, pad_size:-pad_size]
-        
+
         # Display plots if needed
-        if show_plots:        
+        if show_plots:
             _, (ax1, ax2, ax3, ax4, ax5, ax6, ax7, ax8, ax9) = plt.subplots(1, 9, figsize=(14,10))
             ax1.imshow(img)
             ax1.set_title("Original Image")
@@ -465,7 +376,7 @@ class phase_segmentation:
         return trench_masks
 
     def detect_trenches(self, img, show_plots=False):
-        """ Fully detect trenches in a kymograph image
+        """Fully detect trenches in a kymograph image.
 
         Args:
             img (numpy.ndarray, int): Kymograph image to segment
@@ -486,16 +397,16 @@ class phase_segmentation:
             max_region = np.argmax(rp_area)+1
             trench_masks[conn_comp != max_region] = 0
         return trench_masks
-    
+
     def medianFilter(self, img):
-        """ Median filter helper function
-        """
+        """Median filter helper function."""
 #         img_median = mh.median_filter(img,Bc=np.ones((3,3)))
         img_median = sk.filters.median(img,mask=np.ones((3,3)))
         return img_median
-    
+
     def findCellsInTrenches(self, img, mask,sigma,window_size,niblack_k):
-        """ Segment cell regions (not separated yet by watershedding) in a trench
+        """Segment cell regions (not separated yet by watershedding) in a
+        trench.
 
         Args:
             img (numpy.ndarray, int): image
@@ -505,24 +416,23 @@ class phase_segmentation:
             niblack_k (float): K parameter for niblack filtering (higher is more rigorous)
         Returns:
             threshed (numpy.ndarray, bool): Mask for cell regions
-
         """
         img_smooth = img
         # Smooth the image
-        if sigma > 0:    
+        if sigma > 0:
             img_smooth = sk.filters.gaussian(img,sigma=sigma,preserve_range=True,mode='reflect')
 
         # Apply Niblack threshold to identify white regions
         thresh_niblack = sk.filters.threshold_niblack(img_smooth, window_size = window_size, k= niblack_k)
-        
+
         # Look for black regions (cells dark under phase)
         threshed = (img <= thresh_niblack).astype(bool)
-        
+
         # Apply trench mask
         if mask is not None:
             threshed = threshed*mask
         return threshed
-    
+
     def findWatershedMaxima(self, img,mask):
         """ Find watershed seeds using rigorous niblack threshold
         Args:
@@ -556,17 +466,16 @@ class phase_segmentation:
             img_mask (numpy.ndarray, bool): Mask for cell regions
         """
         img_mask = self.findCellsInTrenches(img,mask,self.init_smooth_sigma,self.init_niblack_window_size,self.init_niblack_k)
-        
+
         img_mask = sk.morphology.binary_dilation(img_mask)
-        img_mask = sk.morphology.binary_dilation(img_mask,selem==np.ones((1,3),dtype=np.bool))  
+        img_mask = sk.morphology.binary_dilation(img_mask,selem==np.ones((1,3),dtype=np.bool))
 #         img_mask = mh.dilate(mh.dilate(img_mask),Bc=np.ones((1,3),dtype=np.bool))
         img_mask = sk.morphology.remove_small_objects(img_mask,min_size=4)
         return img_mask
 
     def extract_connected_components_phase(self, threshed, maxima, return_all = False, show_plots=False):
 
-        """
-        phase segmentation and connected components detection algorithm
+        """phase segmentation and connected components detection algorithm.
 
         :param img: numpy array containing image
         :param trench_masks: you can supply your own trench_mask rather than computing it each time
@@ -581,13 +490,12 @@ class phase_segmentation:
         :param maxima_niblack_k: k-offset for maxima determination using niblack
         :param min_cell_size: minimum size of cell in pixels
         :param max_perc_contrast: scale contrast before median filter application
-        :param return_all: whether just the connected component or the connected component, 
+        :param return_all: whether just the connected component or the connected component,
         thresholded image pre-watershed and maxima used in watershed
-        :return: 
+        :return:
             if return_all = False: a connected component matrix
-            if return_all = True: connected component matrix, 
+            if return_all = True: connected component matrix,
             thresholded image pre-watershed and maxima used in watershed
-
         """
 
         # Get distance transforms
@@ -595,7 +503,7 @@ class phase_segmentation:
         distances = sp.ndimage.distance_transform_edt(threshed)
         distances = sk.exposure.rescale_intensity(distances)
         # Label seeds
-        spots = sk.measure.label(maxima,neighbors=4)             
+        spots = sk.measure.label(maxima,neighbors=4)
 #         spots, _ = mh.label(maxima,Bc=np.ones((3,3)))
         surface = (distances.max() - distances)
         # Watershed
@@ -603,23 +511,23 @@ class phase_segmentation:
         # Label connected components
         conn_comp = sk.measure.label(conn_comp,neighbors=4)
         conn_comp = sk.morphology.remove_small_objects(conn_comp,min_size=self.min_cell_size)
-        
-        if show_plots:        
+
+        if show_plots:
             fig2, (ax1, ax2, ax3, ax4) = plt.subplots(1, 4, figsize=(5,10))
             ax1.imshow(distances)
             ax2.imshow(maxima)
             ax3.imshow(spots)
             ax4.imshow(conn_comp)
         return conn_comp
-        
+
     def segment(self, img, return_all=False, show_plots=False):
-        """ Run segmentation for a single image
+        """Run segmentation for a single image.
 
         Args:
             img (numpy.ndarray, int): image
             return_all (bool): Whether to return intermediate masks in adition
                             to final connected components
-            show_plots (bool): Whether to show plots 
+            show_plots (bool): Whether to show plots
         Returns:
             conn_comp (numpy.ndarray, int): Mask of segmented cells, each cell
                                         has a different numbered label
@@ -633,14 +541,15 @@ class phase_segmentation:
         img_mask = self.findWatershedMask(img_median,trench_masks)
         maxima = self.findWatershedMaxima(img_median,img_mask)
         conn_comp = self.extract_connected_components_phase(img_mask, maxima, show_plots=show_plots)
-        
+
         if return_all:
             return conn_comp, trench_masks, img_mask, maxima
         else:
             return conn_comp
-    
+
     def find_trench_masks_and_median_filtered_list(self, trench_array_list):
-        """ Find trench masks and median filtered images for a list of individual kymographs
+        """Find trench masks and median filtered images for a list of
+        individual kymographs.
 
         Args:
             trench_array_list (list): List of numpy.ndarray (t x y x x) representing each
@@ -656,9 +565,9 @@ class phase_segmentation:
                 trench_masks_list[tr,t,:,:] = self.detect_trenches(trench_array_list[tr,t,:,:])
                 img_medians_list[tr,t,:,:] = self.medianFilter(trench_array_list[tr,t,:,:])
         return trench_masks_list, img_medians_list
-    
+
     def find_watershed_mask_list(self, trench_mask_and_median_filtered_list):
-        """ Find cell regions pre-watershed for a list of kymographs
+        """Find cell regions pre-watershed for a list of kymographs.
 
         Args:
             trench_mask_and_median_filtered_list (list):
@@ -673,9 +582,9 @@ class phase_segmentation:
             for t in range(img_array_list.shape[1]):
                 watershed_masks_list[tr,t,:,:] = self.findWatershedMask(img_array_list[tr,t,:,:], trench_mask_array_list[tr,t,:,:])
         return watershed_masks_list, img_array_list
-        
+
     def find_watershed_maxima_list(self, watershed_mask_and_median_filtered_list):
-        """ Find watershed seeds for a list of kymographs
+        """Find watershed seeds for a list of kymographs.
 
         Args:
             watershed_mask_and_median_filtered_list (list):
@@ -690,9 +599,10 @@ class phase_segmentation:
             for t in range(img_array_list.shape[1]):
                 watershed_maxima_list[tr,t,:,:] = self.findWatershedMaxima(img_array_list[tr,t,:,:], masks_list[tr,t,:,:])
         return watershed_maxima_list, masks_list
-    
+
     def find_conn_comp_list(self, watershed_maxima_and_masks_list): #masks_arr is tr,t,y,x
-        """ Watershed cells and return final segmentations for a list of kymoraphs
+        """Watershed cells and return final segmentations for a list of
+        kymoraphs.
 
         Args:
             watershed_maxima_and_masks_list (list):
@@ -707,9 +617,10 @@ class phase_segmentation:
             for t in range(masks_list.shape[1]):
                 final_masks_list[tr,t,:,:] = self.extract_connected_components_phase(masks_list[tr,t,:,:], maxima_list[tr,t,:,:])
         return final_masks_list
-    
+
     def get_trench_loading_fraction(self, img):
-        """ Calculate loading fraction, basically how much of the trench mask is filled with black stuff
+        """Calculate loading fraction, basically how much of the trench mask is
+        filled with black stuff.
 
         Args:
             img (numpy.ndarray): Image to detect loading fraction
@@ -717,7 +628,6 @@ class phase_segmentation:
         Returns:
             loading_fraction (float): How full the trench is, normal
             values are between usually 0.3 and 0.75
-
         """
         # Get trench mask
         trench_mask = self.detect_trenches(img)
@@ -729,15 +639,14 @@ class phase_segmentation:
             return 0
         else:
             return np.sum(loaded)/denom
-    
+
     def measure_trench_loading(self, trench_array_list):
-        """ Measure trench loadings for a list of kymographs
+        """Measure trench loadings for a list of kymographs.
 
         Args:
             trench_array_list(numpy.ndarray, int): tr x t x y x x array of kymograph images
         Returns:
             trench_loadings (numpy.ndarray, float): tr x t array of trench loading
-
         """
         trench_loadings = np.empty((trench_array_list.shape[0], trench_array_list.shape[1]))
         for tr in range(trench_array_list.shape[0]):
@@ -745,10 +654,10 @@ class phase_segmentation:
                 trench_loadings[tr, t] = self.get_trench_loading_fraction(trench_array_list[tr, t, :, :])
         trench_loadings = trench_loadings.flatten()
         return trench_loadings
-    
+
 class phase_segmentation_cluster(phase_segmentation):
-    """ Class for handling cell segmentation and extraction of morphological
-    properties
+    """Class for handling cell segmentation and extraction of morphological
+    properties.
 
     Attributes:
         headpath: base analysis directory
@@ -762,7 +671,7 @@ class phase_segmentation_cluster(phase_segmentation):
         bit_max: maximum intensity value for images
     """
     def __init__(self,headpath,paramfile=True,seg_channel="", init_niblack_k=-0.45, maxima_niblack_k=-0.55, init_smooth_sigma=4, maxima_smooth_sigma=4, init_niblack_window_size=13, maxima_niblack_window_size=13, min_cell_size=100, deviation_from_median=0.3, max_perc_contrast=97, wrap_pad=0):
-        
+
         super(phase_segmentation_cluster, self).__init__(init_niblack_k=init_niblack_k, init_smooth_sigma=init_smooth_sigma, maxima_smooth_sigma=maxima_smooth_sigma,maxima_niblack_k=maxima_niblack_k, init_niblack_window_size=maxima_niblack_window_size, maxima_niblack_window_size=maxima_niblack_window_size, min_cell_size=min_cell_size, deviation_from_median=deviation_from_median, max_perc_contrast=max_perc_contrast, wrap_pad = wrap_pad)
 
         self.headpath = headpath
@@ -774,16 +683,15 @@ class phase_segmentation_cluster(phase_segmentation):
         self.meta_handle = pandas_hdf5_handler(self.metapath)
         self.metadf = None
         self.bit_max = None
-    
+
     def get_num_trenches_timepoints(self):
-        """ Count number of trenches and times from metadata
+        """Count number of trenches and times from metadata.
 
         Args:
             None
         Returns:
             num_trenchid (int): number of trenches in this dataset
             num_time (int): number of timepoints in this dataset
-
         """
         # Load metadata
         metadf = self.meta_handle.read_df("kymograph",read_metadata=True)
@@ -791,9 +699,9 @@ class phase_segmentation_cluster(phase_segmentation):
         num_trenchid = len(metadf.index.unique("trenchid"))
         num_time = len(metadf.index.unique("timepoints"))
         return num_trenchid, num_time
-    
+
     def view_kymograph(self, trench_idx, timepoint, channel):
-        """ Visualize a single timepoint in a kymograph
+        """Visualize a single timepoint in a kymograph.
 
         Args:
             trench_idx (int): Trench index within a file
@@ -812,7 +720,7 @@ class phase_segmentation_cluster(phase_segmentation):
         plt.imshow(img_arr)
 
     def load_trench_array_list(self, path_form, file_idx, key, to_8bit):
-        """ Load all the trenches in a file
+        """Load all the trenches in a file.
 
         Args:
             path_form (str): filename pattern for hdf5s
@@ -831,9 +739,9 @@ class phase_segmentation_cluster(phase_segmentation):
             else:
                 trench_array_list = input_file[key][:]
             return trench_array_list
-    
+
     def save_masks_to_hdf(self, file_idx, final_masks_future):
-        """ Save segmented data to hdf5 archives
+        """Save segmented data to hdf5 archives.
 
         Args:
             file_idx (int): file index of the hdf5 kymograph
@@ -844,15 +752,14 @@ class phase_segmentation_cluster(phase_segmentation):
         with h5py.File(self.phasesegmentationpath + "/segmentation_" + str(file_idx) + ".hdf5", "w") as h5pyfile:
             hdf5_dataset = h5pyfile.create_dataset("data", data=final_masks_future, dtype=np.uint8)
         return "Done"
-            
+
     def generate_trench_loading(self, file_idx):
-        """ Measure trench loading for all trenches in file
+        """Measure trench loading for all trenches in file.
 
         Args:
             file_idx (int): file index of the hdf5 kymograph
         Returns:
             trench_output (numpy.ndarray): (tr x t) array of trench laoding
-
         """
         # Load file
         with h5py.File(self.kymographpath + "/kymograph_" + str(file_idx) + ".hdf5","r") as input_file:
@@ -867,7 +774,7 @@ class phase_segmentation_cluster(phase_segmentation):
         return trench_output
 
     def dask_segment(self,dask_controller, file_list=None, overwrite=True):
-        """ Segment kymographs in parallel using Dask
+        """Segment kymographs in parallel using Dask.
 
         Args:
             dask_controller (trenchripper.dask_controller): Helper object to handle dask jobs
@@ -882,7 +789,7 @@ class phase_segmentation_cluster(phase_segmentation):
         dask_controller.futures = {}
         if file_list is None:
             file_list = self.meta_handle.read_df("kymograph",read_metadata=True)["File Index"].unique().tolist()
-        
+
         num_file_jobs = len(file_list)
 
         # Send dask jobs with increasing priority (to reduce memory usage)
@@ -901,9 +808,9 @@ class phase_segmentation_cluster(phase_segmentation):
             # Save to file
             future = dask_controller.daskclient.submit(self.save_masks_to_hdf,file_idx,future,retries=1,priority=random_priorities[k,5]*51.2)
             dask_controller.futures["Segmentation: " + str(file_idx)] = future
-    
+
     def dask_characterize_trench_loading(self, dask_controller, file_list=None):
-        """ Measure trench loading for the whole dataset in parallel 
+        """Measure trench loading for the whole dataset in parallel.
 
         Args:
             dask_controller (trenchripper.dask_controller): Helper object to handle dask jobs
@@ -913,11 +820,11 @@ class phase_segmentation_cluster(phase_segmentation):
         """
         dask_controller.futures = {}
         dask_controller.futures["Trench Loading"] = []
-        
+
         if file_list is None:
             file_list = self.meta_handle.read_df("kymograph",read_metadata=True)["File Index"].unique().tolist()
         num_file_jobs = len(file_list)
-        
+
         random_priorities = np.random.uniform(size=(num_file_jobs,2))
         for k,file_idx in enumerate(file_list):
             # Load data
@@ -926,15 +833,14 @@ class phase_segmentation_cluster(phase_segmentation):
             future = dask_controller.daskclient.submit(self.measure_trench_loading,future,retries=1,priority=random_priorities[k,0]*0.8)
             # Save to futures
             dask_controller.futures["Trench Loading"].append(future)
-    
+
     def dask_postprocess_trench_loading(self, dask_controller):
-        """ Add trench loading to metadata
+        """Add trench loading to metadata.
 
         Args:
             dask_controller (trenchripper.dask_controller): Helper object to handle dask jobs
         Returns:
             None
-
         """
         # Concatenate future results
         trench_loadings = np.concatenate(dask_controller.daskclient.gather(dask_controller.futures["Trench Loading"]), axis=0)
@@ -945,8 +851,9 @@ class phase_segmentation_cluster(phase_segmentation):
         self.meta_handle.write_df("kymograph", kymodf, metadata=kymodf.metadata)
 
     def props_to_dict(self, regionprops, props_to_grab):
-        """ Select properties from skimage regionprops object and turn into dictionary
-        
+        """Select properties from skimage regionprops object and turn into
+        dictionary.
+
         Args:
             regionprops (skimage.regionprops): regionprops objects for each cell
             props_to_grab(list, str): metrics to extract from regionprops data
@@ -958,9 +865,9 @@ class phase_segmentation_cluster(phase_segmentation):
             props_dict[prop] = list(map(lambda x: x[prop], regionprops))
         del regionprops
         return props_dict
-    
+
     def dask_extract_cell_data(self, dask_controller, props_to_grab, file_list=None, overwrite=True):
-        """ Extract cell morphology measurements
+        """Extract cell morphology measurements.
 
         Args:
             dask_controller (trenchripper.dask_controller): Helper object to handle dask jobs
@@ -969,16 +876,15 @@ class phase_segmentation_cluster(phase_segmentation):
             overwrite (bool): Whether to overwrite the output directory
         Returns:
             None
-
         """
         dask_controller.futures = {}
         # write directory
         writedir(self.phasedatapath,overwrite=overwrite)
-        
+
         # load metadata
         kymodf = self.meta_handle.read_df("kymograph",read_metadata=True)
         metadata = kymodf.metadata
-        
+
         globaldf = self.meta_handle.read_df("global", read_metadata=True)
         # get pixel scaling so that measurements are in micrometers
         pixel_scaling = metadata["pixel_microns"]
@@ -1002,7 +908,7 @@ class phase_segmentation_cluster(phase_segmentation):
                 dask_controller.futures["Cell Props %d: " % file_idx] = dask_controller.daskclient.submit(self.extract_cell_data, file_idx, fov_idx, times, global_trench_indices, trench_loadings, props_to_grab, pixel_scaling, metadata, priority=random_priorities[k, 1]*8)
 
     def dask_extract_cell_data_mask(self, dask_controller, channels, props_to_grab, file_list=None, overwrite=False):
-        """ Extract cell fluorescence properties using phase segmentation graph
+        """Extract cell fluorescence properties using phase segmentation graph.
 
         Args:
             dask_controller (trenchripper.dask_controller): Helper object to handle dask jobs
@@ -1011,16 +917,15 @@ class phase_segmentation_cluster(phase_segmentation):
             overwrite (bool): Whether to overwrite the output directory
         Returns:
             None
-
         """
         dask_controller.futures = {}
         # write directory
         writedir(self.phasedatapath,overwrite=overwrite)
-        
+
         # load metadata
         kymodf = self.meta_handle.read_df("kymograph",read_metadata=True)
         metadata = kymodf.metadata
-        
+
         globaldf = self.meta_handle.read_df("global", read_metadata=True)
         # get pixel scaling so that measurements are in micrometers
         pixel_scaling = globaldf.metadata["pixel_microns"]
@@ -1044,9 +949,9 @@ class phase_segmentation_cluster(phase_segmentation):
                     trench_loadings = kymodf.loc[file_idx, "Trench Loading"]
                     fov_idx = kymodf.loc[file_idx, "fov"]
                     dask_controller.futures["Cell Props %d: " % file_idx] = dask_controller.daskclient.submit(self.extract_cell_data_mask, file_idx, fov_idx, channel, times, global_trench_indices, trench_loadings, props_to_grab, pixel_scaling, metadata, priority=random_priorities[k, k2]*8)
-    
+
     def extract_cell_data(self, file_idx, fov_idx, times, global_trench_indices, trench_loadings, props_to_grab, pixel_scaling, metadata=None):
-        """ Get cell morphology data from segmented trenches
+        """Get cell morphology data from segmented trenches.
 
         Args:
             file_idx (int): hdf5 file index
@@ -1058,7 +963,6 @@ class phase_segmentation_cluster(phase_segmentation):
             metadata (pandas.Dataframe): metdata dataframe
         Returns:
             "Done"
-
         """
         # Get segmented masks
         segmented_mask_array = self.load_trench_array_list(self.phasesegmentationpath + "/segmentation_", file_idx, "data", False)
@@ -1122,9 +1026,9 @@ class phase_segmentation_cluster(phase_segmentation):
             del seg_props
             del trench_time_dataframes
         return "Done"
-    
+
     def extract_cell_data_mask(self, file_idx, fov_idx, channel, times, global_trench_indices, trench_loadings, props_to_grab, pixel_scaling, metadata=None):
-            """ Get cell morphology data from segmented trenches
+            """Get cell morphology data from segmented trenches.
 
             Args:
                 file_idx (int): hdf5 file index
@@ -1137,7 +1041,6 @@ class phase_segmentation_cluster(phase_segmentation):
                 metadata (pandas.Dataframe): metdata dataframe
             Returns:
                 "Done"
-
             """
             # Get segmented masks
             segmented_mask_array = self.load_trench_array_list(self.phasesegmentationpath + "/segmentation_", file_idx, "data", False)
