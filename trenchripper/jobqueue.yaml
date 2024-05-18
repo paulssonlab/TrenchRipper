@@ -1,0 +1,13 @@
+distributed:
+  scheduler:
+    bandwidth: 1000000000     # GB MB/s estimated worker-worker bandwidth
+    worker-ttl: "5m"
+    allowed-failures: 100
+    active-memory-manager:
+      start: True
+  worker:
+    memory:
+      target: 0.6
+      spill: 0.7
+      pause: 0.8  # fraction at which we pause worker threads
+      terminate: 0.95  # fraction at which we terminate the worker

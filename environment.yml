@@ -1,39 +1,37 @@
 name: trenchripper
 channels:
-  - pyviz
   - conda-forge
-  - defaults
+  - pyviz
 dependencies:
-  - black
-  - bokeh=1.4.0
-  - cachetools
-  - click
-  - cudatoolkit=10.0
+  - bokeh
+  - dask
   - dask-jobqueue
-  - dask=2.12.0
-  - distributed=2.12.0
+  - dask-ml
+  - datashader
+  - distributed
   - fastparquet
   - h5py
+  - holoviews
   - ipympl
   - ipywidgets
-  - jupyter-server-proxy
   - jupyterlab
+  - line_profiler
   - matplotlib
-  - nbformat
+  - nd2reader
   - nodejs
+  - numpy
+  - pandas
   - pip
   - pip:
       - pulp
-      - h5py-cache
       - parse
-      - nd2reader
-      - opencv-python
-  - pre-commit
+  - pyarrow
   - pytables
-  - pytorch
-  - qgrid
+  - python=3.11
   - scikit-image
   - scikit-learn
+  - scipy
   - seaborn
+  - statsmodels
   - tifffile
-  - torchvision
+  - zarr

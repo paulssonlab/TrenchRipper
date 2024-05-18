@@ -5,11 +5,11 @@ import scipy as sp
 import h5py
 import os
 import copy
-import pickle
-import shutil
+import pickle as pkl
 import pandas as pd
 import dask.dataframe as dd
 from scipy import ndimage as ndi
+from dask.distributed import as_completed
 
 from skimage import measure,feature,segmentation,future,util,morphology,filters,exposure,transform
 from skimage.segmentation import watershed
@@ -24,27 +24,44 @@ from pandas import HDFStore
 from matplotlib import pyplot as plt
 
 class fluo_segmentation:
-    def __init__(self,bit_max=0,scale_timepoints=False,scaling_percentile=0.9,img_scaling=1.,smooth_sigma=0.75,niblack_scaling=1.,\
-                 hess_pad=6,global_threshold=25,cell_otsu_scaling=1.,local_otsu_r=15,min_obj_size=30,distance_threshold=2):
+    def __init__(self,maskpath=None,bit_max=0,scale_timepoints=False,scaling_percentile=0.9,img_scaling=1.,smooth_sigma=0.75,eig_sigma=2.,\
+                 eig_ball_radius=20,eig_local_thr="niblack",eig_otsu_scaling=1.,eig_niblack_k=0.05,eig_window_size=7,\
+                 hess_pad=6,local_thr="otsu",background_thr="triangle",global_threshold=25,window_size=15,cell_otsu_scaling=1.,niblack_k=0.2,background_scaling=1.,\
+                 min_obj_size=30,distance_threshold=2,border_buffer=1,horizontal_border_only=False):
+
+        self.maskpath = maskpath
         self.bit_max = bit_max
-        
+
         self.scale_timepoints=scale_timepoints
         self.scaling_percentile=scaling_percentile
-        
+
         self.img_scaling = img_scaling
 
         self.smooth_sigma = smooth_sigma
-        
-        self.niblack_scaling = niblack_scaling
+
+#         self.hess_thr_scale = hess_thr_scale
         self.hess_pad = hess_pad
-        
+        self.eig_sigma = eig_sigma
+        self.eig_ball_radius = eig_ball_radius
+        self.eig_local_thr = eig_local_thr
+        self.eig_otsu_scaling = eig_otsu_scaling
+        self.eig_niblack_k = eig_niblack_k
+        self.eig_window_size = eig_window_size
+
+        self.local_thr = local_thr
+        self.background_thr = background_thr
         self.global_threshold = global_threshold
+        self.window_size = window_size
         self.cell_otsu_scaling = cell_otsu_scaling
-        self.local_otsu_r = local_otsu_r
+        self.niblack_k = niblack_k
+        self.background_scaling = background_scaling
         self.min_obj_size = min_obj_size
-        
+
         self.distance_threshold = distance_threshold
-        
+
+        self.border_buffer = border_buffer
+        self.horizontal_border_only = horizontal_border_only
+
     def to_8bit(self,img_arr,bit_max=None):
         img_max = np.max(img_arr)+0.0001
         if bit_max is None:
@@ -54,9 +71,10 @@ class fluo_segmentation:
         min_val = np.min(img_arr)
 #         min_val = np.min(img_arr)
         norm_array = (img_arr-min_val)/(max_val-min_val)
+        norm_array = np.clip(norm_array,0,1)
         norm_byte_array = sk.img_as_ubyte(norm_array)
         return norm_byte_array
-    
+
     def scale_kymo(self,wrap_arr,percentile):
         perc_t = np.percentile(wrap_arr[:].reshape(wrap_arr.shape[0],-1),percentile,axis=1)
         norm_perc_t = perc_t/np.max(perc_t)
@@ -64,11 +82,11 @@ class fluo_segmentation:
         scaled_arr[scaled_arr>255.] = 255.
         scaled_arr = scaled_arr.astype("uint8")
         return scaled_arr
-    
+
     def get_eig_img(self,img_arr,edge_padding=6):
         inverted = sk.util.invert(img_arr)
         del img_arr
-        inverted = np.pad(inverted, edge_padding, 'reflect')
+        inverted = np.pad(inverted, edge_padding, 'edge')
         hessian = sk.feature.hessian_matrix(inverted,order="rc")
         del inverted
         eig_img = sk.feature.hessian_matrix_eigvals(hessian)
@@ -78,137 +96,403 @@ class fluo_segmentation:
         max_val,min_val = np.max(eig_img),np.min(eig_img)
         eig_img = self.to_8bit(eig_img)
         return eig_img
-    
-    def get_eig_mask(self,eig_img,niblack_scaling=1.):
-        eig_thr = sk.filters.threshold_niblack(eig_img)*niblack_scaling
-        eig_mask = eig_img>eig_thr
-        return eig_mask
-    
-    def get_cell_mask(self,img_arr,global_threshold=50,cell_otsu_scaling=1.,local_otsu_r=15,min_obj_size=30):
-        otsu_selem = sk.morphology.disk(local_otsu_r)
-        thr = sk.filters.rank.otsu(img_arr,otsu_selem)
-        del otsu_selem
-        cell_mask = (img_arr>thr)*(img_arr>global_threshold)
-        del img_arr
-        cell_mask = sk.morphology.remove_small_objects(cell_mask,min_size=min_obj_size)
-        cell_mask = sk.morphology.remove_small_holes(cell_mask)
-        
+
+    def get_background_dist(self,array,min_tail=30):
+        hist_range = (0,np.percentile(array.flatten(),90))
+        freq,val = np.histogram(array.flatten(),bins=50,range=hist_range)
+        mu_n = val[np.argmax(freq)]
+        lower_tail = array[array<mu_n].flatten()
+        if len(lower_tail) > min_tail:
+            std_n = sp.stats.halfnorm.fit(lower_tail)[1]
+        else:
+            std_n = np.std(array.flatten())
+        return mu_n,std_n
+
+    def get_eig_mask(self,eig_img,input_kymo_mask,eig_sigma=2.,eig_ball_radius=20,eig_local_thr="niblack",eig_otsu_scaling=1.,eig_niblack_k=0.05,eig_window_size=7):
+        inv_eig_img = sk.util.invert(sk.filters.gaussian(eig_img,sigma=eig_sigma,preserve_range=True).astype("uint8"))
+
+        norm_inv_hess = (inv_eig_img)/(2**8 - 1)
+        inv_eig_img = (sk.restoration.rolling_ball(norm_inv_hess,radius=eig_ball_radius)*(2**8 - 1)).astype("uint8")
+        del norm_inv_hess
+
+        if eig_local_thr == "otsu":
+            otsu_selem = sk.morphology.disk(eig_window_size)
+            if input_kymo_mask is None:
+                eig_mask = inv_eig_img<(sk.filters.rank.otsu(inv_eig_img,otsu_selem)*eig_otsu_scaling)
+            else:
+                eig_mask = (inv_eig_img<(sk.filters.rank.otsu(inv_eig_img,otsu_selem,mask=input_kymo_mask)*eig_otsu_scaling))*input_kymo_mask
+
+        elif (eig_local_thr == "niblack")&(input_kymo_mask is None):
+            eig_mask = inv_eig_img<sk.filters.threshold_niblack(inv_eig_img, window_size=eig_window_size, k=eig_niblack_k)
+
+        else:
+            raise ValueError("Cannot use a segmentation mask and a Niblack threshold. Use Otsu thresholding instead.")
+
+        return eig_mask,inv_eig_img
+
+    def get_cell_mask(self,input_kymo, input_kymo_labels, t_tot, local_thr = "otsu" , background_thr = "triangle", global_threshold = 0, window_size = 15, cell_otsu_scaling= 1., niblack_k = 0.2, background_scaling = 1., min_obj_size = 30):
+
+        wrapped_kymo = kymo_handle()
+        wrapped_kymo.import_unwrap(input_kymo,t_tot)
+        wrapped_kymo = wrapped_kymo.return_wrap()
+
+        if input_kymo_labels is not None:
+            wrapped_input_kymo_labels = kymo_handle()
+            wrapped_input_kymo_labels.import_unwrap(input_kymo_labels,t_tot)
+            wrapped_input_kymo_labels = wrapped_input_kymo_labels.return_wrap()
+
+        wrapped_cell_mask = []
+
+        for t in range(wrapped_kymo.shape[0]):
+            img_arr = wrapped_kymo[t]
+            if input_kymo_labels is not None:
+                wrapped_input_kymo = wrapped_input_kymo_labels[t]
+                label_list = sorted(list(set(np.unique(wrapped_input_kymo))-set([0])))
+
+            try:
+                if local_thr == "otsu":
+                    otsu_selem = sk.morphology.disk(window_size)
+                    if input_kymo_labels is None:
+                        cell_mask = img_arr>(sk.filters.rank.otsu(img_arr,otsu_selem)*cell_otsu_scaling)
+                    else:
+                        cell_mask = []
+                        for c in label_list:
+                            selected_cell_mask = (wrapped_input_kymo==c)
+                            working_cell_mask = (img_arr>(sk.filters.rank.otsu(img_arr,otsu_selem,mask=selected_cell_mask)*cell_otsu_scaling))
+                            working_cell_mask = working_cell_mask&selected_cell_mask
+                            cell_mask.append(working_cell_mask)
+                        if len(cell_mask) > 0:
+                            cell_mask = np.any(np.stack(cell_mask,axis=0),axis=0)
+                        else:
+                            cell_mask = np.zeros(img_arr.shape,dtype=bool)
+
+                elif (local_thr == "niblack")&(input_kymo_labels is None):
+                    cell_mask = img_arr>sk.filters.threshold_niblack(img_arr, window_size=window_size, k=niblack_k)
+
+                elif local_thr == "none":
+                    cell_mask = img_arr>0
+
+                else:
+                    raise ValueError("Cannot use a segmentation mask and a Niblack threshold. Use Otsu thresholding instead.")
+
+                if (background_thr == "triangle") or (background_thr == "yen"):
+                    if input_kymo_labels is None:
+                        if len(np.unique(img_arr))>1:
+                            if background_thr == "triangle":
+                                back_thr = sk.filters.threshold_triangle(img_arr)*background_scaling
+                            elif background_thr == "yen":
+                                back_thr = sk.filters.threshold_yen(img_arr)*background_scaling
+                        else:
+                            back_thr = img_arr[0,0]*background_scaling
+                        back_mask = img_arr>back_thr
+                    else:
+                        back_mask = []
+                        for c in label_list:
+                            selected_cell_mask = (wrapped_input_kymo==c)
+                            img_arr_masked = img_arr[selected_cell_mask]
+                            if len(np.unique(img_arr_masked))>1:
+                                if background_thr == "triangle":
+                                    back_thr = sk.filters.threshold_triangle(img_arr_masked)*background_scaling
+                                elif background_thr == "yen":
+                                    back_thr = sk.filters.threshold_yen(img_arr_masked)*background_scaling
+                            elif len(np.unique(img_arr_masked))==1:
+                                back_thr = img_arr_masked[0]*background_scaling
+                            else:
+                                back_thr = 255
+                            del img_arr_masked
+                            working_back_mask = (img_arr>back_thr)&selected_cell_mask
+                            back_mask.append(working_back_mask)
+                        if len(back_mask) > 0:
+                            back_mask = np.any(np.stack(back_mask,axis=0),axis=0)
+                        else:
+                            back_mask = np.zeros(img_arr.shape,dtype=bool)
+
+                    cell_mask = cell_mask&back_mask&(img_arr>global_threshold)
+                    del img_arr
+                    cell_mask = sk.morphology.remove_small_objects(cell_mask,min_size=min_obj_size)
+
+                elif (background_thr == "object-based")&(input_kymo_labels is None):
+
+                    cell_mask = ~sk.morphology.binary_closing(~cell_mask) ##NEW
+                    cell_mask = sk.morphology.remove_small_objects(cell_mask,min_size=min_obj_size)
+
+                    labeled_mask = sk.morphology.label(cell_mask)
+                    del cell_mask
+
+                    background = img_arr[labeled_mask==0]
+                    mu_n,std_n = self.get_background_dist(background)
+                    del background
+
+                    rps = sk.measure.regionprops(labeled_mask,intensity_image=img_arr)
+                    obj_intensities = np.array([rp.mean_intensity for rp in rps])
+                    del rps
+
+                    back_thr = mu_n + background_scaling*std_n
+                    init_cell_mask = obj_intensities>back_thr
+
+                    cell_list = np.where(init_cell_mask)[0]+1
+                    del init_cell_mask
+                    cell_mask = np.isin(labeled_mask,cell_list)
+                    del cell_list
+                    del labeled_mask
+
+                    cell_mask = cell_mask*(img_arr>global_threshold)
+                    del img_arr
+
+                elif background_thr == "none":
+                    cell_mask = cell_mask&(img_arr>global_threshold)
+
+                else:
+                    raise ValueError("Cannot use a segmentation mask and object-based thresholding. Use a triangle threshold instead.")
+
+            except:
+                raise
+
+            cell_mask = sk.morphology.remove_small_holes(cell_mask)
+            wrapped_cell_mask.append(cell_mask)
+            del cell_mask
+
+
+        del wrapped_kymo
+        wrapped_cell_mask = np.array(wrapped_cell_mask)
+
+        cell_mask = kymo_handle()
+        cell_mask.import_wrap(wrapped_cell_mask)
+        del wrapped_cell_mask
+        cell_mask = cell_mask.return_unwrap()
+
         return cell_mask
-        
-    def segment(self,img_arr): #img_arr is t,y,x
+
+    def reorder_ids(self,array):
+        unique_ids,inv = np.unique(array,return_inverse=True)
+        new_ids = np.array(range(len(unique_ids)))
+        lookup = dict(zip(unique_ids,new_ids))
+        output = np.array([lookup[unique_id] for unique_id in unique_ids])[inv].reshape(array.shape)
+        return output
+
+    def segment(self,img_arr,label_arr=None): ## img_arr is t,y,x
         t_tot = img_arr.shape[0]
         img_arr = self.to_8bit(img_arr,self.bit_max)
         if self.scale_timepoints:
             img_arr = self.scale_kymo(img_arr,self.scaling_percentile)
-        
+
         input_kymo = kymo_handle()
         input_kymo.import_wrap(img_arr)
         del img_arr
-        
         input_kymo = input_kymo.return_unwrap()
-        original_shape = input_kymo.shape 
-        input_kymo = transform.rescale(input_kymo,self.img_scaling,anti_aliasing=False, preserve_range=True).astype("uint8")
+
+        original_shape = input_kymo.shape
+        len_per_tpt = (original_shape[1]*self.img_scaling)//t_tot
+        adjusted_scale_factor = (len_per_tpt*t_tot)/(original_shape[1])
+
+        input_kymo = transform.rescale(input_kymo,adjusted_scale_factor,anti_aliasing=False, preserve_range=True).astype("uint8")
         input_kymo = sk.filters.gaussian(input_kymo,sigma=self.smooth_sigma,preserve_range=True,mode='reflect').astype("uint8")
-        
+
         eig_img = self.get_eig_img(input_kymo,edge_padding=self.hess_pad)
-        eig_mask = self.get_eig_mask(eig_img,niblack_scaling=self.niblack_scaling)
+
+        if self.maskpath is not None:
+            input_kymo_labels = kymo_handle()
+            input_kymo_labels.import_wrap(label_arr)
+            input_kymo_labels = input_kymo_labels.return_unwrap()
+            input_kymo_labels = transform.rescale(input_kymo_labels,adjusted_scale_factor,anti_aliasing=False, preserve_range=True)
+            input_kymo_mask = input_kymo_labels>0
+        else:
+            input_kymo_labels = None
+            input_kymo_mask = None
+
+        eig_mask, inv_eig_img = self.get_eig_mask(eig_img,input_kymo_mask,eig_sigma=self.eig_sigma,eig_ball_radius=self.eig_ball_radius,\
+                                                eig_local_thr=self.eig_local_thr,eig_otsu_scaling=self.eig_otsu_scaling,\
+                                                eig_niblack_k=self.eig_niblack_k,eig_window_size=self.eig_window_size)
+        del input_kymo_mask
         del eig_img
-        
-        cell_mask = self.get_cell_mask(input_kymo,global_threshold=self.global_threshold,\
-                    cell_otsu_scaling=self.cell_otsu_scaling,local_otsu_r=self.local_otsu_r,\
+        del inv_eig_img
+
+        cell_mask = self.get_cell_mask(input_kymo,input_kymo_labels,t_tot,local_thr = self.local_thr,\
+                    background_thr = self.background_thr,\
+                    global_threshold=self.global_threshold,\
+                    window_size = self.window_size,\
+                    cell_otsu_scaling = self.cell_otsu_scaling,\
+                    niblack_k = self.niblack_k,\
+                    background_scaling=self.background_scaling,\
                     min_obj_size=self.min_obj_size)
         del input_kymo
-        
+        del input_kymo_labels
+
         dist_img = ndi.distance_transform_edt(cell_mask).astype("uint8")
         dist_mask = dist_img>self.distance_threshold
         marker_mask = dist_mask*eig_mask
         del dist_mask
         marker_mask = sk.measure.label(marker_mask)
-        
+
         output_labels = watershed(-dist_img, markers=marker_mask, mask=cell_mask)
 
         del dist_img
         del marker_mask
         del cell_mask
+
+        output_labels = sk.morphology.remove_small_objects(output_labels,min_size=self.min_obj_size)
         output_labels = sk.transform.resize(output_labels,original_shape,order=0,anti_aliasing=False, preserve_range=True).astype("uint32")
-         
+
         output_kymo = kymo_handle()
         output_kymo.import_unwrap(output_labels,t_tot)
         del output_labels
-        output_kymo = output_kymo.return_wrap()
+        output_kymo = output_kymo.return_wrap() #mask_arr
+        if self.maskpath is not None:
+            reindexed_kymo = np.stack([output_kymo,label_arr],axis=3)
+            relabel_fn = lambda x: int(f'{x[0]:04n}{x[1]:04n}')
+            reindexed_kymo = np.apply_along_axis(relabel_fn,3,reindexed_kymo) #kyx
+            reindexed_kymo[(output_kymo==0)|(label_arr==0)] = 0
+            output_kymo = reindexed_kymo
+            del reindexed_kymo
+            del label_arr
+            output_kymo = np.stack([sk.segmentation.relabel_sequential(output_kymo[i],offset=1)[0] for i in range(output_kymo.shape[0])],axis=0)
+
+        top_bottom_mask = np.ones(output_kymo.shape[1:],dtype=bool)
+        top_bottom_mask[:(self.border_buffer+1)] = False
+        top_bottom_mask[-(self.border_buffer+1):] = False
+
+        for i in range(output_kymo.shape[0]):
+            if (self.border_buffer >= 0) and not self.horizontal_border_only:
+                output_kymo[i] = sk.segmentation.clear_border(output_kymo[i], buffer_size=self.border_buffer) ##NEW
+            elif (self.border_buffer >= 0) and self.horizontal_border_only:
+                output_kymo[i] = sk.segmentation.clear_border(output_kymo[i], mask=top_bottom_mask) ##NEWER
+            output_kymo[i] = self.reorder_ids(output_kymo[i])
         return output_kymo
-    
+
 class fluo_segmentation_cluster(fluo_segmentation):
-    def __init__(self,headpath,paramfile=True,seg_channel="",bit_max=0,scale_timepoints=False,scaling_percentile=0.9,\
-                 img_scaling=1.,smooth_sigma=0.75,niblack_scaling=1.,hess_pad=6,global_threshold=25,cell_otsu_scaling=1.,\
-                 local_otsu_r=15,min_obj_size=30,distance_threshold=2):
+    def __init__(self,headpath,paramfile=True,seg_channel="",segpath="fluorsegmentation",segparfilename="fluorescent_segmentation.par",\
+                 maskpath=None,bit_max=0,scale_timepoints=False,scaling_percentile=0.9,\
+                 img_scaling=1.,smooth_sigma=0.75,eig_sigma=2.,eig_ball_radius=20,eig_local_thr="niblack",eig_otsu_scaling=1.,\
+                 eig_niblack_k=0.05,eig_window_size=7,hess_pad=6,local_thr="otsu",background_thr="triangle",\
+                 global_threshold=25,window_size=15,cell_otsu_scaling=1.,niblack_k=0.2,background_scaling=1.,min_obj_size=30,\
+                 distance_threshold=2,border_buffer=1,horizontal_border_only=False):
+###             local_thr="otsu",background_thr="triangle",window_size=15,cell_otsu_scaling=1.,niblack_k=0.2,background_scaling=1.,border_buffer=1)
+
 
         if paramfile:
-            parampath = headpath + "/fluorescent_segmentation.par"
+            parampath = headpath + "/" + segparfilename
             with open(parampath, 'rb') as infile:
-                param_dict = pickle.load(infile)
-                
+                param_dict = pkl.load(infile)
+
         seg_channel = param_dict["Segmentation Channel:"]
+        maskpath = param_dict["Extra Mask Path:"]
         bit_max = param_dict['8 Bit Maximum:']
         scale_timepoints = param_dict['Scale Fluorescence?']
         scaling_percentile = param_dict["Scaling Percentile:"]
         img_scaling = param_dict["Image Scaling Factor:"]
         smooth_sigma = param_dict['Gaussian Kernel Sigma:']
+        local_thr = param_dict['Local Threshold Method:']
+        background_thr = param_dict['Background Threshold Method:']
         global_threshold = param_dict['Global Threshold:']
-        cell_otsu_scaling = param_dict['Cell Threshold Scaling:']
-        local_otsu_r = param_dict['Local Otsu Radius:']
-        min_obj_size = param_dict['Minimum Object Size:']        
-        niblack_scaling = param_dict['Niblack Scaling:']
+        window_size = param_dict['Local Window Size:']
+        cell_otsu_scaling = param_dict['Otsu Scaling:']
+        niblack_k = param_dict['Niblack K:']
+        background_scaling = param_dict['Background Threshold Scaling:']
+        min_obj_size = param_dict['Minimum Object Size:']
+
+        eig_sigma = param_dict['Hessian Blur Sigma:']
+        eig_ball_radius = param_dict['Hessian Rolling Ball Size:']
+        eig_local_thr = param_dict['Hessian Local Threshold Method:']
+        eig_otsu_scaling = param_dict['Hessian Otsu Scaling:']
+        eig_niblack_k = param_dict['Hessian Niblack K:']
+        eig_window_size = param_dict['Hessian Local Window Size:']
+#         hess_thr_scale = param_dict['Hessian Scaling:']
         distance_threshold = param_dict['Distance Threshold:']
-                
-        super(fluo_segmentation_cluster, self).__init__(bit_max=bit_max,scale_timepoints=scale_timepoints,scaling_percentile=scaling_percentile,\
-                                                        img_scaling=img_scaling,smooth_sigma=smooth_sigma,niblack_scaling=niblack_scaling,\
-                                                        hess_pad=hess_pad,global_threshold=global_threshold,cell_otsu_scaling=cell_otsu_scaling,\
-                                                        local_otsu_r=local_otsu_r,min_obj_size=min_obj_size,distance_threshold=distance_threshold)
+        border_buffer = param_dict['Border Buffer:']
+        horizontal_border_only = param_dict['Horizontal Border Only:']
+
+        super(fluo_segmentation_cluster, self).__init__(maskpath=maskpath,bit_max=bit_max,scale_timepoints=scale_timepoints,scaling_percentile=scaling_percentile,img_scaling=img_scaling,\
+                                                        smooth_sigma=smooth_sigma,eig_sigma=eig_sigma,eig_ball_radius=eig_ball_radius,eig_local_thr=eig_local_thr,\
+                                                        eig_otsu_scaling=eig_otsu_scaling,eig_niblack_k=eig_niblack_k,eig_window_size=eig_window_size,\
+                                                        hess_pad=hess_pad,local_thr=local_thr,background_thr=background_thr,\
+                                                        global_threshold=global_threshold,window_size=window_size,cell_otsu_scaling=cell_otsu_scaling,niblack_k=niblack_k,\
+                                                        background_scaling=background_scaling,min_obj_size=min_obj_size,distance_threshold=distance_threshold,border_buffer=border_buffer,\
+                                                       horizontal_border_only=horizontal_border_only)
 
         self.headpath = headpath
         self.seg_channel = seg_channel
         self.kymographpath = headpath + "/kymograph"
-        self.fluorsegmentationpath = headpath + "/fluorsegmentation"
+        self.segpath = headpath + "/" + segpath
         self.metapath = headpath + "/kymograph/metadata"
+        if self.maskpath is not None:
+            self.fullmaskpath = headpath + "/" + self.maskpath
 
     def generate_segmentation(self,file_idx):
         with h5py.File(self.kymographpath + "/kymograph_" + str(file_idx) + ".hdf5","r") as input_file:
             input_data = input_file[self.seg_channel]
             trench_output = []
-            for trench_idx in range(input_data.shape[0]):
-                trench_array = input_data[trench_idx]
-                trench_array = self.segment(trench_array)
-                trench_output.append(trench_array[np.newaxis])
-                del trench_array
-        trench_output = np.concatenate(trench_output,axis=0)
-        with h5py.File(self.fluorsegmentationpath + "/segmentation_" + str(file_idx) + ".hdf5", "w") as h5pyfile:
-            hdf5_dataset = h5pyfile.create_dataset("data", data=trench_output, dtype="uint16")
+
+            if self.maskpath is None:
+                for trench_idx in range(input_data.shape[0]):
+                    trench_array = input_data[trench_idx]
+                    trench_array = self.segment(trench_array)
+                    trench_output.append(trench_array[np.newaxis])
+                    del trench_array
+            else:
+                with h5py.File(self.fullmaskpath + "/segmentation_" + str(file_idx) + ".hdf5","r") as input_label_file:
+                    input_label_data = input_label_file["data"]
+                    for trench_idx in range(input_data.shape[0]):
+                        trench_array = input_data[trench_idx]
+                        input_label_array = input_label_data[trench_idx]
+                        trench_array = self.segment(trench_array,label_arr=input_label_array)
+                        trench_output.append(trench_array[np.newaxis])
+                        del trench_array
+
+            trench_output = np.concatenate(trench_output,axis=0)
+            with h5py.File(self.segpath + "/segmentation_" + str(file_idx) + ".hdf5", "w") as h5pyfile:
+                hdf5_dataset = h5pyfile.create_dataset("data", data=trench_output, dtype="uint16")
+            del trench_output
+
         return file_idx
-    
+
     def segmentation_completed(self,seg_future):
         return 0
 
-    def dask_segment(self,dask_controller):
-        writedir(self.fluorsegmentationpath,overwrite=True)
+    def dask_segment(self,dask_controller,overwrite=False):
+
         dask_controller.futures = {}
 
-        kymodf = dd.read_parquet(self.metapath).persist()
+        writedir(self.segpath,overwrite=overwrite)
+
+        # Check for existing files in case of in progress run
+        if os.path.exists(self.segpath + "/progress.pkl"):
+            with open(self.segpath + "/progress.pkl", 'rb') as infile:
+                finished_files = pkl.load(infile)
+        else:
+            finished_files = []
+
+        kymodf = dd.read_parquet(self.metapath,calculate_divisions=True)
         file_list = kymodf["File Index"].unique().compute().tolist()
+
+        file_list = list(set(file_list) - set(finished_files))
         num_file_jobs = len(file_list)
 
         random_priorities = np.random.uniform(size=(num_file_jobs,))
+
+        segmentation_futures_list = []
         for k,file_idx in enumerate(file_list):
             priority = random_priorities[k]
 
             future = dask_controller.daskclient.submit(self.generate_segmentation,file_idx,retries=0,priority=priority)
             dask_controller.futures["Segmentation: " + str(file_idx)] = future
-        for k,file_idx in enumerate(file_list):
-            priority = random_priorities[k]
+            segmentation_futures_list.append(future)
 
-            future = dask_controller.daskclient.submit(self.segmentation_completed,dask_controller.futures["Segmentation: " + str(file_idx)],retries=0,priority=priority)
-            dask_controller.futures["Segmentation Completed: " + str(file_idx)] = future
-        gathered_tasks = dask_controller.daskclient.gather([dask_controller.futures["Segmentation Completed: " + str(file_idx)] for file_idx in file_list],errors="skip")
+        for future in as_completed(segmentation_futures_list):
+            result = future.result()
+            finished_files = finished_files + [result]
+            with open(self.segpath + "/progress.pkl", 'wb') as infile:
+                pkl.dump(finished_files,infile)
+            future.cancel()
+
+        dask_controller.reset_worker_memory()
+        # os.remove(self.fluorsegmentationpath + "/progress.pkl")
+#         for k,file_idx in enumerate(file_list):
+#             priority = random_priorities[k]
+
+#             future = dask_controller.daskclient.submit(self.segmentation_completed,dask_controller.futures["Segmentation: " + str(file_idx)],retries=0,priority=priority)
+#             dask_controller.futures["Segmentation Completed: " + str(file_idx)] = future
+#         gathered_tasks = dask_controller.daskclient.gather([dask_controller.futures["Segmentation Completed: " + str(file_idx)] for file_idx in file_list],errors="skip")
+
 
 class phase_segmentation:
     """Segmentation algorithm for high mag phase images.
@@ -474,28 +758,37 @@ class phase_segmentation:
         return img_mask
 
     def extract_connected_components_phase(self, threshed, maxima, return_all = False, show_plots=False):
-
-        """phase segmentation and connected components detection algorithm.
+        """Phase segmentation and connected components detection algorithm.
 
         :param img: numpy array containing image
-        :param trench_masks: you can supply your own trench_mask rather than computing it each time
-        :param flip_trenches: if mothers are on bottom of image set to True
-        :param cut_from_bottom: how far to crop the bottom of the detected trenches to avoid impacting segmentation
-        :param above_trench_pad: how muching padding above the mother cell
-        :param init_smooth_sigma: how much smoothing to apply to the image for the initial niblack segmentation
-        :param init_niblack_window_size: size of niblack window for segmentation
+        :param trench_masks: you can supply your own trench_mask rather
+            than computing it each time
+        :param flip_trenches: if mothers are on bottom of image set to
+            True
+        :param cut_from_bottom: how far to crop the bottom of the
+            detected trenches to avoid impacting segmentation
+        :param above_trench_pad: how muching padding above the mother
+            cell
+        :param init_smooth_sigma: how much smoothing to apply to the
+            image for the initial niblack segmentation
+        :param init_niblack_window_size: size of niblack window for
+            segmentation
         :param init_niblack_k: k-offset for initial niblack segmentation
-        :param maxima_smooth_sigma: how much smoothing to use for image that determines maxima used to seed watershed
-        :param maxima_niblack_window_size: size of niblack window for maxima determination
-        :param maxima_niblack_k: k-offset for maxima determination using niblack
+        :param maxima_smooth_sigma: how much smoothing to use for image
+            that determines maxima used to seed watershed
+        :param maxima_niblack_window_size: size of niblack window for
+            maxima determination
+        :param maxima_niblack_k: k-offset for maxima determination using
+            niblack
         :param min_cell_size: minimum size of cell in pixels
-        :param max_perc_contrast: scale contrast before median filter application
-        :param return_all: whether just the connected component or the connected component,
-        thresholded image pre-watershed and maxima used in watershed
-        :return:
-            if return_all = False: a connected component matrix
-            if return_all = True: connected component matrix,
-            thresholded image pre-watershed and maxima used in watershed
+        :param max_perc_contrast: scale contrast before median filter
+            application
+        :param return_all: whether just the connected component or the
+            connected component, thresholded image pre-watershed and
+            maxima used in watershed
+        :return: if return_all = False: a connected component matrix if
+            return_all = True: connected component matrix, thresholded
+            image pre-watershed and maxima used in watershed
         """
 
         # Get distance transforms
