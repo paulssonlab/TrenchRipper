@@ -1,0 +1,37 @@
+name: trenchripper
+channels:
+  - conda-forge
+  - pyviz
+dependencies:
+  - bokeh
+  - dask
+  - dask-jobqueue
+  - dask-ml
+  - datashader
+  - distributed
+  - fastparquet
+  - h5py
+  - holoviews
+  - ipympl
+  - ipywidgets
+  - jupyterlab
+  - line_profiler
+  - matplotlib
+  - nd2reader
+  - nodejs
+  - numpy
+  - pandas
+  - pip
+  - pip:
+      - pulp
+      - parse
+  - pyarrow
+  - pytables
+  - python=3.11
+  - scikit-image
+  - scikit-learn
+  - scipy
+  - seaborn
+  - statsmodels
+  - tifffile
+  - zarr

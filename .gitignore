@@ -1,0 +1,11 @@
+**/*.csv
+**/*.avi
+**/*.hdf5
+**/*.wmv
+**/*.pkl
+**/*.gaf
+**/*.zip
+**/*.obo
+**/*.mp4
+.*
+!/.gitignore
