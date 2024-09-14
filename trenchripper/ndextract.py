@@ -36,7 +36,7 @@ def register_image_stack(img_stack,cumulative_shift_coords): #performs a basic i
     registered_stack = np.array(registered)
     return registered_stack
 
-def generate_flatfield(flatfieldpath,outputpath): #can add dark image correction to this
+def generate_flatfield(flatfieldpath,outputpath,normalize=True): #can add dark image correction to this
     img_arr = []
     with ND2Reader(flatfieldpath) as infile:
         if 'v' in infile.sizes.keys():
@@ -50,7 +50,8 @@ def generate_flatfield(flatfieldpath,outputpath): #can add dark image correction
             img_arr.append(np.array(in_arr))
     img_arr = np.array(img_arr)
     aggregated_img = np.median(img_arr,axis=0)
-    aggregated_img = aggregated_img/np.max(aggregated_img)
+    if normalize:
+        aggregated_img = aggregated_img/np.max(aggregated_img)
     tifffile.imsave(outputpath,data=aggregated_img)
 
 def apply_flatfield(img,flatfieldimg,darkimg):

@@ -41,14 +41,18 @@ def trim_memory() -> int:
 #     return Ften
 
 def get_focus_score(img_arr):
-    # computes focus score from single image
+    ## computes focus score from single image
     img_min = np.min(img_arr)
     img_max = np.max(img_arr)
     I = (img_arr-img_min)/(img_max-img_min)
 
+    total_I = numpy.sum(I)
+
     Sx = sk.filters.sobel_h(I)
     Sy = sk.filters.sobel_v(I)
-    Ften = np.sum(Sx**2 + Sy**2)
+    edge_magnitude = np.sqrt(Sx**2 + Sy**2)
+    norm_edge_magnitude = edge_magnitude / total_I
+    Ften = np.sum(norm_edge_magnitude)
     return Ften
 
 def get_grid_lookups(global_df, delta = 10):

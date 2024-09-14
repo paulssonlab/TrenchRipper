@@ -36,7 +36,7 @@ def register_image_stack(img_stack,cumulative_shift_coords): #performs a basic i
     registered_stack = np.array(registered)
     return registered_stack
 
-def generate_flatfield(flatfieldpath,outputpath): #can add dark image correction to this
+def generate_flatfield(flatfieldpath,outputpath,normalize=True): #can add dark image correction to this
     img_arr = []
     with ND2Reader(flatfieldpath) as infile:
         if 'v' in infile.sizes.keys():
@@ -50,7 +50,8 @@ def generate_flatfield(flatfieldpath,outputpath): #can add dark image correction
             img_arr.append(np.array(in_arr))
     img_arr = np.array(img_arr)
     aggregated_img = np.median(img_arr,axis=0)
-    aggregated_img = aggregated_img/np.max(aggregated_img)
+    if normalize:
+        aggregated_img = aggregated_img/np.max(aggregated_img)
     tifffile.imsave(outputpath,data=aggregated_img)
 
 def apply_flatfield(img,flatfieldimg,darkimg):
@@ -234,7 +235,7 @@ class hdf5_fov_extractor:
                     nd2file.metadata[key] = item
                 y_dim = self.metadata['height']
                 x_dim = self.metadata['width']
-                with h5py.File(self.hdf5path + "/hdf5_" + str(file_idx) + ".hdf5","w",rdcc_nbytes=self.chunk_cache_mem_size) as h5pyfile: 
+                with h5py.File(self.hdf5path + "/hdf5_" + str(file_idx) + ".hdf5","w",rdcc_nbytes=self.chunk_cache_mem_size) as h5pyfile:
                 # with h5py_cache.File(self.hdf5path + "/hdf5_" + str(file_idx) + ".hdf5","w",chunk_cache_mem_size=self.chunk_cache_mem_size) as h5pyfile:
 
                     if self.generate_thumbnails:
@@ -479,7 +480,7 @@ class nd_metadata_handler:
             return exp_metadata,fov_metadata
         else:
             nd2file.close()
-            return exp_metadata\
+            return exp_metadata
 
 def get_tiff_tags(filepath):
     with tifffile.TiffFile(filepath) as tiff:
@@ -695,13 +696,13 @@ class tiff_extractor:
             filedf = filedf.set_index(["timepoints"], drop=True, append=False, inplace=False)
             filedf = filedf.sort_index()
 
-            with h5py.File(self.hdf5path + "/hdf5_" + str(file_idx) + ".hdf5","w",rdcc_nbytes=self.chunk_cache_mem_size) as h5pyfile: 
+            with h5py.File(self.hdf5path + "/hdf5_" + str(file_idx) + ".hdf5","w",rdcc_nbytes=self.chunk_cache_mem_size) as h5pyfile:
             # with h5py_cache.File(self.hdf5path + "/hdf5_" + str(file_idx) + ".hdf5","w",chunk_cache_mem_size=self.chunk_cache_mem_size) as h5pyfile:
                 for i,channel in enumerate(self.metadata["channels"]):
                     hdf5_dataset = h5pyfile.create_dataset(str(channel),\
                     (num_entries,y_dim,x_dim), chunks=self.chunk_shape, dtype='uint16')
 
-                    if self.channel_to_flat_dict[channel] != '': ##flatfielding channels                
+                    if self.channel_to_flat_dict[channel] != '': ##flatfielding channels
                         for j in range(len(timepoint_list)):
                             frame = timepoint_list[j]
                             entry = filedf.loc[frame]["channel_paths"]
@@ -716,7 +717,7 @@ class tiff_extractor:
                             file_path = entry[channel]
                             img = tifffile.imread(file_path)
                             hdf5_dataset[j,:,:] = img
-                        
+
             return "Done."
 
         file_list = self.metadf.index.get_level_values("File Index").unique().values
