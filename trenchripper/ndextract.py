@@ -18,7 +18,7 @@ from parse import compile
 def get_registration_shifts(img_stack):
     shift_coords = [[0.,0.]]
     for i in range(1,img_stack.shape[0]):
-        shift = sk.registration.phase_cross_correlation(img_stack[i-1],img_stack[i],return_error=False,normalization=None)
+        shift, _, _ = sk.registration.phase_cross_correlation(img_stack[i-1],img_stack[i],return_error=False,normalization=None)
         shift_coords.append(shift)
     shift_coords = np.array(shift_coords)
     cumulative_shift_coords = np.add.accumulate(shift_coords,axis=0)
