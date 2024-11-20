@@ -560,7 +560,7 @@ class focus_filter:
         fig.set_size_inches(18, 12)
         fig.show()
 
-    def plot_focus_threshold(self,focus_thr=60, intensity_thr=0, perc_above_thr=1. ,n_images=50):
+    def plot_focus_threshold(self,focus_thr=0.6, intensity_thr=0, perc_above_thr=1. ,n_images=50):
         self.final_params["Focus Threshold"] = focus_thr
         self.final_params["Intensity Threshold"] = intensity_thr
         self.final_params["Percent Of Kymograph"] = perc_above_thr
@@ -580,7 +580,7 @@ class focus_filter:
         if self.channel is None:
             print("No Channel Selected")
         else:
-            focus_threshold = interactive(self.plot_focus_threshold, {"manual":True}, focus_thr=IntSlider(value=0, min=0, max=self.focus_max, step=1),\
+            focus_threshold = interactive(self.plot_focus_threshold, {"manual":True}, focus_thr=FloatSlider(value=0, min=0, max=1, step=0.01),\
                                           intensity_thr=IntSlider(value=0, min=0, max=self.intensity_max, step=1),\
                                           perc_above_thr=FloatSlider(value=1., min=0., max=1., step=0.05),\
                                          n_images=IntText(value=50,description="Number of images:", disabled=False));
@@ -1512,7 +1512,7 @@ class lane_overlay(whole_chip_viewer):
     def __init__(self,headpath,display_values_list=["Global Row"],persist_data=False,compute_data=False,bbox_sel_color='red',bbox_sel_alpha=0.2,bbox_unsel_color='blue',bbox_unsel_alpha=0.2):
         #display_values_list is a list of strings of columns in the trench-timepoint dataframe
         #the trench-timepoint dataframe must havbe exactly 1 entry per trench per timepoint!
-        super(lane_overlay, self).__init__(headpath,persist_data=persist_data,compute_data=compute_data)
+        super().__init__(headpath,persist_data=persist_data,compute_data=compute_data)
 
         self.headpath = headpath
 

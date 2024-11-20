@@ -540,7 +540,8 @@ def export_estimator_df(steady_state_df_path,preinduction_df_path,single_variabl
                         estimator_names_to_agg = ["Mean","Mean"],unpaired_aggregators=[np.nanmedian,np.nanmean],\
                         bivariate_aggregator_list=[False,False],paired_aggregators=[],\
                         agg_names=["Mean (Robust)","Mean (True)"],filter_proliferating=False,variant_index='oDEPool7_id',\
-                     final_columns = ['sgRNA','EcoWG1_id', 'Gene', 'N Mismatch', 'Category', 'TargetID']):
+                        control_categories=['OnlyPlasmid', 'NoTarget'],\
+                        final_columns = ['sgRNA','EcoWG1_id', 'Gene', 'N Mismatch', 'Category', 'TargetID']):
     final_columns = [variant_index] + final_columns
     wrapped_single_variable_list = [[variable] for variable in single_variable_list]
     param_groups_list = [bivariate_variable_list if item else wrapped_single_variable_list for item in bivariate_estimator_list]
@@ -584,7 +585,7 @@ def export_estimator_df(steady_state_df_path,preinduction_df_path,single_variabl
     if ("Mean (Robust)" in agg_names) and ("Variance (Extrinsic)" in agg_names):
         ###Adding derived values
         ### note that CV (external) is normalized by wt median
-        control_estimator_df = estimator_df[estimator_df["Category"].isin(['OnlyPlasmid', 'NoTarget'])]
+        control_estimator_df = estimator_df[estimator_df["Category"].isin(control_categories)]
         control_medians = control_estimator_df.loc["Mean (Robust)"].groupby("Variable(s)")["Value"].median()
         
         CV_extrinsic_df = estimator_df.loc["Variance (Extrinsic)"].copy()
@@ -1369,7 +1370,7 @@ def trench_bootstrap_null_model_main(dask_controller,steady_state_df_path,preind
     dask_controller.daskclient.cancel(control_trench_kde_df)
     
     final_cell_cycle_df_preinduction_repartitioned = dd.read_parquet(repartitioned_preinduction_df_path, engine="pyarrow",calculate_divisions=True)
-    final_cell_cycle_df_preinduction_controls = final_cell_cycle_df_preinduction_repartitioned[final_cell_cycle_df_preinduction_repartitioned['Category'].isin(["NoTarget","OnlyPlasmid"])].persist()
+    final_cell_cycle_df_preinduction_controls = final_cell_cycle_df_preinduction_repartitioned[final_cell_cycle_df_preinduction_repartitioned['Category'].isin(control_categories)].persist()
     final_cell_cycle_df_preinduction_controls = final_cell_cycle_df_preinduction_controls.repartition(partition_size="1MB").reset_index().set_index("Multi-Experiment Phenotype Trenchid",sorted=True).persist()
     wait(final_cell_cycle_df_preinduction_controls);
     first_idx = final_cell_cycle_df_preinduction_controls.index.divisions[0]

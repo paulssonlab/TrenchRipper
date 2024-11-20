@@ -25,7 +25,7 @@ from .utils import multifov,pandas_hdf5_handler,writedir
 from .daskutils import add_list_to_column
 from tifffile import imread
 
-## Hacky memory trim
+### Hacky memory trim
 import ctypes
 
 def trim_memory() -> int:
@@ -46,7 +46,7 @@ def get_focus_score(img_arr):
     img_max = np.max(img_arr)
     I = (img_arr-img_min)/(img_max-img_min)
 
-    total_I = numpy.sum(I)
+    total_I = np.sum(I)
 
     Sx = sk.filters.sobel_h(I)
     Sy = sk.filters.sobel_v(I)
@@ -1116,7 +1116,7 @@ class kymograph_cluster:
         out_df = pd.concat(working_rowdfs)
         return out_df
 
-    def get_all_filter_scores(self,channel):
+    def get_all_filter_scores(self,channel,dask_controller):
         df = dd.read_parquet(self.kymographpath + "/metadata",calculate_divisions=True)
         file_list = df["File Index"].unique().compute().tolist()
         del df
@@ -1141,11 +1141,10 @@ class kymograph_cluster:
 
         ## compiling output dataframe ##
         df_out = dd.from_delayed(good_delayed).persist()
-        df_out["FOV Parquet Index"] = df_out.index
-        df_out = df_out.set_index("FOV Parquet Index",drop=True,sorted=False)
         df_out = df_out.repartition(partition_size="25MB").persist()
-        writedir(self.kymographpath + "/metadata",overwrite=True)
-        dd.to_parquet(df_out, self.kymographpath + "/metadata",engine='fastparquet',compression='gzip',write_metadata_file=True)
+        dd.to_parquet(df_out, self.kymographpath + "/metadata_2",engine='fastparquet',compression='gzip',write_metadata_file=True)
+        dask_controller.daskclient.cancel(df_out)
+        shutil.rmtree(self.kymographpath + "/metadata")
 
     def generate_kymographs(self,dask_controller,first_fov_only=False,delta_global_rows=25):
         writedir(self.kymographpath,overwrite=True)
@@ -1320,7 +1319,7 @@ class kymograph_cluster:
         dask_controller.daskclient.cancel(good_futures)
 
         if self.filter_channel != None:
-            self.get_all_filter_scores(self.filter_channel)
+            self.get_all_filter_scores(self.filter_channel,dask_controller)
         else:
             ### compiling output dataframe ##
             #### Dirty fix
@@ -1330,9 +1329,6 @@ class kymograph_cluster:
             dd.to_parquet(df_out, self.kymographpath + "/metadata_2",engine='pyarrow',compression='gzip',write_metadata_file=True)
             dask_controller.daskclient.cancel(df_out)
             shutil.rmtree(self.kymographpath + "/metadata")
-
-#             writedir(self.kymographpath + "/metadata",overwrite=True)
-#             shutil.move(self.kymographpath + "/temp_metadata",self.kymographpath + "/metadata")
 
         # Adding global row column
         df_out = dd.read_parquet(self.kymographpath + "/metadata_2",calculate_divisions=True)
@@ -1388,17 +1384,22 @@ class kymograph_cluster:
 
 #         return df
 
-    def filter_trenchids(self,channel,df,focus_threshold = 0.,intensity_threshold=0.,perc_above = 0.):
-        num_above = np.round(len(df["timepoints"].unique())*perc_above).astype(int)
+    def filter_trenchids(self,dask_controller,channel,df,focus_threshold = 0.,intensity_threshold=0.,perc_above = 0.):
+        num_above = np.round(len(df["timepoints"].unique().compute())*perc_above).astype(int)
 
         trench_group = df.set_index("trenchid",sorted=True).groupby("trenchid")
-        trenchid_filter = trench_group.apply(lambda x: np.sum((x[channel + " Focus Score"]>focus_threshold)&(x[channel + " Mean Intensity"]>intensity_threshold))>num_above).compute()
+        trenchid_filter = trench_group.apply(lambda x: np.sum((x[channel + " Focus Score"]>focus_threshold)&(x[channel + " Mean Intensity"]>intensity_threshold))>=num_above).compute()
         trenchid_filter = pd.DataFrame({"trenchid filter":trenchid_filter})
         out_df = df.join(trenchid_filter, on='trenchid')
         out_df = out_df[out_df["trenchid filter"]]
         out_df = out_df.drop(labels="trenchid filter", axis=1)
-        return out_df
-
+        
+        ## compiling output dataframe ##
+        dd.to_parquet(out_df, self.kymographpath + "/metadata_2",engine='fastparquet',compression='gzip',write_metadata_file=True)
+        dask_controller.daskclient.cancel(out_df)
+        shutil.rmtree(self.kymographpath + "/metadata")
+        os.rename(self.kymographpath + "/metadata_2", self.kymographpath + "/metadata")
+    
     def reindex_trenches(self,df):
 
         num_timepoints = len(df["timepoints"].unique())
@@ -1486,13 +1487,14 @@ class kymograph_cluster:
             os.remove(proc_file_path)
         return 1
 
-    def post_process(self,dask_controller,trench_timepoints_per_file=25000,paramfile=True,focus_thr=0,intensity_thr=0,perc_above_thr=0,filter_channel=None):
+    def post_process(self,dask_controller,trench_timepoints_per_file=25000,focus_thr=0,intensity_thr=0,perc_above_thr=0,filter_channel=None):
 
         dask_controller.futures = {}
 
-        if paramfile:
-            parampath = self.headpath + "/focus_filter.par"
-            with open(parampath, 'rb') as infile:
+        outputdf = dd.read_parquet(self.kymographpath + "/metadata",calculate_divisions=True)
+
+        if os.path.exists(self.headpath + "/focus_filter.par"):
+            with open(self.headpath + "/focus_filter.par", 'rb') as infile:
                 param_dict = pickle.load(infile)
 
             filter_channel = param_dict["Filter Channel"]
@@ -1500,11 +1502,10 @@ class kymograph_cluster:
             intensity_thr = param_dict["Intensity Threshold"]
             perc_above_thr = param_dict["Percent Of Kymograph"]
 
-        outputdf = dd.read_parquet(self.kymographpath + "/metadata",calculate_divisions=True)
-
-        if filter_channel != None: #revisit next time this is necessary, because outputdf no longer in memory
-            outputdf = self.filter_trenchids(filter_channel,outputdf,focus_threshold=focus_thr,intensity_threshold=intensity_thr,perc_above=perc_above_thr)
-
+            self.filter_trenchids(dask_controller,filter_channel,outputdf,focus_threshold=focus_thr,\
+                                  intensity_threshold=intensity_thr,perc_above=perc_above_thr)
+            outputdf = dd.read_parquet(self.kymographpath + "/metadata",calculate_divisions=True)
+        
         if os.path.exists(self.kymographpath + "/global_rows.pkl"):
             print("Eliminating selected rows...")
             with open(self.kymographpath + "/global_rows.pkl", 'rb') as handle:
@@ -1564,16 +1565,16 @@ class kymograph_cluster:
         #test code
         file_indices_dask_df = dd.from_pandas(file_indices,npartitions=outputdf.npartitions).persist()
         wait(file_indices_dask_df);
-        file_indices_dask_df = file_indices_dask_df.repartition(divisions=outputdf.divisions)
-        # file_indices_dask_df = file_indices_dask_df.repartition(divisions=outputdf.divisions,force=True)
+        # file_indices_dask_df = file_indices_dask_df.repartition(divisions=outputdf.divisions)
+        file_indices_dask_df = file_indices_dask_df.repartition(divisions=outputdf.divisions,force=True)
         file_indices_dask_df = file_indices_dask_df.persist()
         wait(file_indices_dask_df);
         outputdf["File Index"] = file_indices_dask_df[0]
         #test code
         file_trenchid_dask_df = dd.from_pandas(file_trenchid,npartitions=outputdf.npartitions).persist()
         wait(file_trenchid_dask_df);
-        file_trenchid_dask_df = file_trenchid_dask_df.repartition(divisions=outputdf.divisions)
-        # file_trenchid_dask_df = file_trenchid_dask_df.repartition(divisions=outputdf.divisions,force=True)
+        # file_trenchid_dask_df = file_trenchid_dask_df.repartition(divisions=outputdf.divisions)
+        file_trenchid_dask_df = file_trenchid_dask_df.repartition(divisions=outputdf.divisions,force=True)
         file_trenchid_dask_df = file_trenchid_dask_df.persist()
         wait(file_trenchid_dask_df);
         outputdf["File Trench Index"] = file_trenchid_dask_df[0]
