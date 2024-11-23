@@ -1448,6 +1448,7 @@ class kymograph_cluster:
 #         trenchid_list = df["trenchid"].unique().compute().tolist()
 #         trenchiddf = df.set_index("trenchid")
         working_trenchdf = dd.read_parquet(self.kymographpath + "/trenchiddf",calculate_divisions=True).loc[trenchids].compute(scheduler='threads')
+        working_trenchdf = working_trenchdf.sort_values(["fov","File Index","row"])
         output_file_path = self.kymographpath+"/kymograph_"+str(k)+".hdf5"
 
         with h5py.File(output_file_path,"w") as outfile:
