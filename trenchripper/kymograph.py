@@ -1502,9 +1502,10 @@ class kymograph_cluster:
             intensity_thr = param_dict["Intensity Threshold"]
             perc_above_thr = param_dict["Percent Of Kymograph"]
 
-            self.filter_trenchids(dask_controller,filter_channel,outputdf,focus_threshold=focus_thr,\
-                                  intensity_threshold=intensity_thr,perc_above=perc_above_thr)
-            outputdf = dd.read_parquet(self.kymographpath + "/metadata",calculate_divisions=True)
+            if filter_channel != None:
+                self.filter_trenchids(dask_controller,filter_channel,outputdf,focus_threshold=focus_thr,\
+                                      intensity_threshold=intensity_thr,perc_above=perc_above_thr)
+                outputdf = dd.read_parquet(self.kymographpath + "/metadata",calculate_divisions=True)
         
         if os.path.exists(self.kymographpath + "/global_rows.pkl"):
             print("Eliminating selected rows...")
