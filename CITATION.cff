@@ -4,6 +4,6 @@ authors:
 - family-names: Eaton
   given-names: Daniel
 orcid: https://orcid.org/0000-0003-4790-8254
-title: TrenchRipper: "A Pipeline for High-throughput Mother Machine Image Analysis"
+title: "TrenchRipper: "A Pipeline for High-throughput Mother Machine Image Analysis"
 version: v1.0.0-zenodo
 date-released: 2024-12-24
