@@ -504,7 +504,9 @@ class focus_filter:
     def subsample_df(self,df,n_samples):
         ttl_rows = len(df)
         n_samples = min(n_samples,ttl_rows)
-        frac = min((n_samples/ttl_rows)*1.1,1.)
+        frac = min((n_samples/ttl_rows),1.)
+        min_frac = 1/df.map_partitions(len).compute().median()
+        frac = max(frac,min_frac*10)
         subsampled_df = df.sample(frac=frac, replace=False).compute()[:n_samples]
         return subsampled_df
 
