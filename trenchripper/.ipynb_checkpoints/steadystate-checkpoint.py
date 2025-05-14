@@ -15,7 +15,7 @@ import scipy.stats
 ### from recombinator.block_bootstrap import stationary_bootstrap
 from dask.distributed import wait
 from arch.bootstrap import StationaryBootstrap
-from recombinator.tapered_block_bootstrap import tapered_block_bootstrap
+# from recombinator.tapered_block_bootstrap import tapered_block_bootstrap
 from statsmodels.robust.scale import qn_scale
 
 from .daskutils import to_parquet_checkpoint
@@ -249,44 +249,44 @@ def bootstrap_density(trench_df,estimator,param_groups,return_kde=False,n_bootst
     else:
         return estimate_sample
 
-### the tapered block bootstrap is broken because recombinator is broken
-### only the stationary bootstrap and standard bootstrap are usable
-def tapered_block_bootstrap_density(trench_df,estimator,param_groups,return_kde=False,n_bootstraps_trench_density=1000,bootstrap_block_len=5,**estkwargs):
-    ## currently estimators must accept NaN values
-    ## param_groups must be a list of lists of grouped parameters for grouped statistics
-    ## Can only take mother values
+# ### the tapered block bootstrap is broken because recombinator is broken
+# ### only the stationary bootstrap and standard bootstrap are usable
+# def tapered_block_bootstrap_density(trench_df,estimator,param_groups,return_kde=False,n_bootstraps_trench_density=1000,bootstrap_block_len=5,**estkwargs):
+#     ## currently estimators must accept NaN values
+#     ## param_groups must be a list of lists of grouped parameters for grouped statistics
+#     ## Can only take mother values
     
-    params = list(set.union(*[set(param_group) for param_group in param_groups]))
-    param_group_positions = [[params.index(param) for param in param_group] for param_group in param_groups]
+#     params = list(set.union(*[set(param_group) for param_group in param_groups]))
+#     param_group_positions = [[params.index(param) for param in param_group] for param_group in param_groups]
     
-    if np.sum(trench_df["Mother"]) == 0:
-        return None
+#     if np.sum(trench_df["Mother"]) == 0:
+#         return None
     
-    mother_df = trench_df[trench_df["Mother"]]
-    cell_cycle_timeseries = mother_df[params].values
-    while bootstrap_block_len>0:
-        if cell_cycle_timeseries.shape[0] > bootstrap_block_len:
-            tapered_bootstrap_sample = tapered_block_bootstrap(cell_cycle_timeseries,bootstrap_block_len,n_bootstraps_trench_density)
-            if len(params) == 1:
-                tapered_bootstrap_sample = tapered_bootstrap_sample[:,:,np.newaxis]
+#     mother_df = trench_df[trench_df["Mother"]]
+#     cell_cycle_timeseries = mother_df[params].values
+#     while bootstrap_block_len>0:
+#         if cell_cycle_timeseries.shape[0] > bootstrap_block_len:
+#             tapered_bootstrap_sample = tapered_block_bootstrap(cell_cycle_timeseries,bootstrap_block_len,n_bootstraps_trench_density)
+#             if len(params) == 1:
+#                 tapered_bootstrap_sample = tapered_bootstrap_sample[:,:,np.newaxis]
                 
-            if len(param_groups[0]) == 1:
-                estimate_sample = np.stack([estimator(tapered_bootstrap_sample[:,:,param_group_position[0]],axis=1,**estkwargs) for param_group_position in param_group_positions],axis=1)
+#             if len(param_groups[0]) == 1:
+#                 estimate_sample = np.stack([estimator(tapered_bootstrap_sample[:,:,param_group_position[0]],axis=1,**estkwargs) for param_group_position in param_group_positions],axis=1)
                 
-            else:
-                estimate_sample = np.stack([estimator(tapered_bootstrap_sample[:,:,param_group_position],**estkwargs) for param_group_position in param_group_positions],axis=1)
+#             else:
+#                 estimate_sample = np.stack([estimator(tapered_bootstrap_sample[:,:,param_group_position],**estkwargs) for param_group_position in param_group_positions],axis=1)
             
-            if return_kde:            
-                try:
-                    estimate_kde = [sp.stats.gaussian_kde(estimate_sample[:,i][~np.isnan(estimate_sample[:,i])]) for i in range(estimate_sample.shape[1])]
-                    return estimate_kde
-                except:
-                    return None
-            else:
-                return estimate_sample
-        else:
-            bootstrap_block_len -= 1
-    return None
+#             if return_kde:            
+#                 try:
+#                     estimate_kde = [sp.stats.gaussian_kde(estimate_sample[:,i][~np.isnan(estimate_sample[:,i])]) for i in range(estimate_sample.shape[1])]
+#                     return estimate_kde
+#                 except:
+#                     return None
+#             else:
+#                 return estimate_sample
+#         else:
+#             bootstrap_block_len -= 1
+#     return None
 
 def get_trajectory_array(trench_df,trench_df_cellid_indexed):
     # get first and second generation cellids

@@ -3,6 +3,7 @@ channels:
   - conda-forge
   - pyviz
 dependencies:
+  - arch-py
   - bokeh
   - dask
   - dask-jobqueue
