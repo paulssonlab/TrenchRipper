@@ -11,7 +11,7 @@ from time import sleep
 from dask.distributed import Client,progress
 from dask.distributed.diagnostics.plugin import WorkerPlugin
 from dask_jobqueue import SLURMCluster
-from IPython.core.display import display, HTML
+from IPython.display import display, HTML
 from .utils import writedir
 
 ## Hacky memory trim
