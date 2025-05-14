@@ -5,7 +5,7 @@ channels:
 dependencies:
   - arch-py
   - bokeh
-  - dask
+  - dask=2024.2.0
   - dask-jobqueue
   - dask-ml
   - datashader
@@ -28,7 +28,7 @@ dependencies:
       - parse
   - pyarrow
   - pytables
-  - python=3.11
+  - python=3.11.8
   - scikit-image
   - scikit-learn
   - scipy
