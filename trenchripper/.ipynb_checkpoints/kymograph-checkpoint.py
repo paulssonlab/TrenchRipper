@@ -1494,7 +1494,18 @@ class kymograph_cluster:
 
         outputdf = dd.read_parquet(self.kymographpath + "/metadata",calculate_divisions=True)
 
+        ##hack until I can fix this
+        outputdf = outputdf.repartition(npartitions=len(outputdf.divisions),force=True)
+        outputdf = outputdf.reset_index().set_index("FOV Parquet Index",sorted=False)
+        dd.to_parquet(outputdf, self.kymographpath + "/metadata_2",engine='pyarrow',compression='gzip',write_metadata_file=True,schema="infer")
+        dask_controller.daskclient.cancel(outputdf)
+        shutil.rmtree(self.kymographpath + "/metadata")
+        os.rename(self.kymographpath + "/metadata_2", self.kymographpath + "/metadata")
+        sleep(self.o2_file_rename_latency)
+        outputdf = dd.read_parquet(self.kymographpath + "/metadata",calculate_divisions=True)
+        
         if os.path.exists(self.headpath + "/focus_filter.par"):
+            print("Applying Focus Filter...")
             with open(self.headpath + "/focus_filter.par", 'rb') as infile:
                 param_dict = pickle.load(infile)
 
