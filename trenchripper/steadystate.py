@@ -988,7 +988,7 @@ def trenchwise_bootstrap_main(dask_controller,steady_state_df_path,preinduction_
         # trench_bootstrap_dd_joined = trench_bootstrap_dd_joined.repartition(partition_size="500MB",force=False)
         variant_min = trench_bootstrap_dd_joined.index.min().compute()
         variant_max = trench_bootstrap_dd_joined.index.max().compute()
-        trench_bootstrap_dd_joined = trench_bootstrap_dd_joined.repartition(divisions=list(range(variant_min,variant_max,n_variants_per_block)) + [variant_max], force=False)
+        trench_bootstrap_dd_joined = trench_bootstrap_dd_joined.repartition(divisions=list(range(int(variant_min),int(variant_max),n_variants_per_block)) + [int(variant_max)], force=False)
         to_parquet_checkpoint(dask_controller,trench_bootstrap_dd_joined,trench_bootstrap_path_temp,engine='pyarrow',overwrite=overwrite)
         
         dask_controller.daskclient.cancel(trench_bootstrap_dd_joined)
