@@ -61,7 +61,7 @@ def apply_flatfield(img,flatfieldimg,darkimg):
     return outimg
 
 class hdf5_fov_extractor:
-    def __init__(self,nd2filename,headpath,tpts_per_file=100,ignore_fovmetadata=False,generate_thumbnails=True,thumbnail_rescale=0.05,register_images=False,reg_channel=None,nd2reader_override={}): #note this chunk size has a large role in downstream steps...make sure is less than 1 MB
+    def __init__(self,nd2filename,headpath,tpts_per_file=100,ignore_fovmetadata=False,generate_thumbnails=True,thumbnail_rescale=0.05,register_images=False,reg_channel=None,nd2reader_override={},experiment_start_delay_seconds=0): #note this chunk size has a large role in downstream steps...make sure is less than 1 MB
         self.nd2filename = nd2filename
         self.headpath = headpath
         self.metapath = self.headpath + "/metadata.hdf5"
@@ -75,6 +75,7 @@ class hdf5_fov_extractor:
         self.thumbnail_rescale = thumbnail_rescale
         self.register_images = register_images
         self.reg_channel = reg_channel
+        self.experiment_start_delay_seconds = experiment_start_delay_seconds
 
         self.organism = ''
         self.microscope = ''
@@ -113,6 +114,7 @@ class hdf5_fov_extractor:
         else:
             assignment_metadata = self.assignidx(exp_metadata,metadf=fov_metadata)
             assignment_metadata.astype({"t":float,"x": float,"y":float,"z":float,"File Index":int,"Image Index":int})
+            assignment_metadata = assignment_metadata.assign(t = lambda df_: df_['t']-self.experiment_start_delay_seconds)
 
         self.meta_handle.write_df("global",assignment_metadata,metadata=exp_metadata)
 
