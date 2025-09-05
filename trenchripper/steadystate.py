@@ -1578,9 +1578,9 @@ def get_final_bootstrap_output(steady_state_df_path,include_ccf=True,include_pva
     if include_pvals:
         control_variant_bootstrap_dd = dd.read_parquet(control_variant_bootstrap_path, engine="pyarrow",calculate_divisions=True)
         if filter_proliferating:        
-            estimator_df_output_new_idx = estimator_df_output.reset_index().apply(lambda x: "-".join([x["Estimator"],x["Variable(s)"],str(x["N Observations Proliferating"])]), axis=1)
+            estimator_df_output_new_idx = estimator_df_output.reset_index().apply(lambda x: "-".join([x["Estimator"],x["Variable(s)"],str(int(x["N Observations Proliferating"]))]), axis=1)
         else:
-            estimator_df_output_new_idx = estimator_df_output.reset_index().apply(lambda x: "-".join([x["Estimator"],x["Variable(s)"],str(x["N Observations"])]), axis=1)
+            estimator_df_output_new_idx = estimator_df_output.reset_index().apply(lambda x: "-".join([x["Estimator"],x["Variable(s)"],str(int(x["N Observations"]))]), axis=1)
         estimator_df_output_new_idx.index = estimator_df_output.index
         estimator_df_output["Estimator-Variable(s)-NTrenches"] = estimator_df_output_new_idx
     
