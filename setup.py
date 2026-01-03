@@ -5,9 +5,11 @@ with open("README.md", "r") as fh:
 
 setuptools.setup(
     name="TrenchRipper",
-    version="1.0.2",
+    version="1.0.4",
     author="Daniel Eaton",
     packages=setuptools.find_packages(),
+    include_package_data=True,
+    package_data={"trenchripper": ["jobqueue.yaml"]},
     install_requires=[
         "pandas",
         "numpy",
