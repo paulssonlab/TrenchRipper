@@ -1384,15 +1384,51 @@ class kymograph_cluster:
 
 #         return df
 
-    def filter_trenchids(self,dask_controller,channel,df,focus_threshold = 0.,intensity_threshold=0.,perc_above = 0.):
-        num_above = np.round(len(df["timepoints"].unique().compute())*perc_above).astype(int)
+    def filter_trenchids(self,dask_controller,filter_channel,df,focus_threshold = 0.,intensity_threshold=0.,perc_above = 0.):
 
-        trench_group = df.set_index("trenchid",sorted=True).groupby("trenchid")
-        trenchid_filter = trench_group.apply(lambda x: np.sum((x[channel + " Focus Score"]>focus_threshold)&(x[channel + " Mean Intensity"]>intensity_threshold))>=num_above).compute()
-        trenchid_filter = pd.DataFrame({"trenchid filter":trenchid_filter})
-        out_df = df.join(trenchid_filter, on='trenchid')
-        out_df = out_df[out_df["trenchid filter"]]
-        out_df = out_df.drop(labels="trenchid filter", axis=1)
+        def filter_single_trenchid(df: pd.DataFrame,
+                               channel: str,
+                               focus_threshold = 0.,
+                               intensity_threshold = 0.,
+                               num_timepoints_above_threshold_to_keep_trench = 0.):
+            """
+            Filter trenches based on focus and intensity scores.
+            Initially intended to be used as part of a groupby-apply operation to filter trenches
+            Args:
+                df (pd.DataFrame): DataFrame containing trench data.
+                channel (str): The channel to filter on.
+                focus_threshold (float): Threshold for focus score.
+                intensity_threshold (float): Threshold for mean intensity.
+                num_timepoints_above_threshold_to_keep_trench (int): Minimum number of timepoints above threshold to keep trench.
+            Returns:
+                pd.DataFrame: Filtered DataFrame or None if trench is discarded.
+            """
+            mask_pass_focus_filter = df[channel + " Focus Score"] > focus_threshold
+            mask_pass_intensity_filter = df[channel + " Mean Intensity"] > intensity_threshold
+            mask_pass_combined = mask_pass_focus_filter & mask_pass_intensity_filter
+
+            num_timepoints_passing_mask = np.sum(mask_pass_combined)
+            if num_timepoints_passing_mask >= num_timepoints_above_threshold_to_keep_trench:
+                return df
+            else:
+                return None
+
+        num_above = np.round(len(df["timepoints"].unique().compute())*perc_above).astype(int)
+        meta_df = df.head(0).reset_index()
+
+        out_df = \
+        (df
+        .reset_index()
+        .groupby("trenchid")
+        .apply(filter_single_trenchid,
+                meta=meta_df,
+                channel=filter_channel,
+                focus_threshold=focus_threshold,
+                intensity_threshold=intensity_threshold,
+                num_timepoints_above_threshold_to_keep_trench=num_above)
+        .reset_index(drop=True)
+        .set_index('FOV Parquet Index', sort=True) # This is very inefficient but I did not find another easy way to deal with the indices
+        )
         
         ## compiling output dataframe ##
         dd.to_parquet(out_df, self.kymographpath + "/metadata_2",engine='fastparquet',compression='gzip',write_metadata_file=True)

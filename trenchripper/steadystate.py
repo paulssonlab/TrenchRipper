@@ -547,7 +547,7 @@ def export_estimator_df(steady_state_df_path,preinduction_df_path,single_variabl
     param_groups_list = [bivariate_variable_list if item else wrapped_single_variable_list for item in bivariate_estimator_list]
     param_groups_to_agg_list = [bivariate_variable_list if item else wrapped_single_variable_list for item in bivariate_aggregator_list]
     aggregators = unpaired_aggregators + paired_aggregators
-    is_paired_aggregetor_list = [False for i in range(len(unpaired_aggregators))]+[True for i in range(len(paired_aggregators))]
+    is_paired_aggregator_list = [False for i in range(len(unpaired_aggregators))]+[True for i in range(len(paired_aggregators))]
 
     trench_estimator_path = steady_state_df_path + "_Trench_Estimators.pkl"
     estimator_path = steady_state_df_path + "_Estimators.pkl"
@@ -580,7 +580,7 @@ def export_estimator_df(steady_state_df_path,preinduction_df_path,single_variabl
     del trench_estimator_df
 
     estimator_df = get_estimator_df(trench_estimator_dd,final_columns,param_groups_to_agg_list,\
-                    estimator_names_to_agg,aggregators,is_paired_aggregetor_list,agg_names,variant_index=variant_index)
+                    estimator_names_to_agg,aggregators,is_paired_aggregator_list,agg_names,variant_index=variant_index)
 
     if ("Mean (Robust)" in agg_names) and ("Variance (Extrinsic)" in agg_names):
         ###Adding derived values
@@ -719,13 +719,13 @@ def get_estimator_df_all_trenches(df,estimator_names,estimators,param_groups_lis
     trench_estimator_df_output = pd.concat(trench_estimator_df_output).droplevel(1).reset_index().set_index(["Estimator",trench_index])
     return trench_estimator_df_output
 
-def get_estimator_df_single_variant(variant_df,param_groups,estimator_name,final_columns,aggregator,is_paired_aggregetor,agg_name,trench_index="Multi-Experiment Phenotype Trenchid"):
+def get_estimator_df_single_variant(variant_df,param_groups,estimator_name,final_columns,aggregator,is_paired_aggregator,agg_name,trench_index="Multi-Experiment Phenotype Trenchid"):
     variant_df = variant_df.reset_index().set_index(["Induction","Estimator",trench_index]).sort_index()
     post_in_index = ("Post",estimator_name) in variant_df.index
     pre_in_index = ("Pre",estimator_name) in variant_df.index
     
     if post_in_index:
-        if not pre_in_index and is_paired_aggregetor:
+        if not pre_in_index and is_paired_aggregator:
             return None
 
         post_estimator_variant_df = variant_df.loc["Post",estimator_name]
@@ -737,7 +737,7 @@ def get_estimator_df_single_variant(variant_df,param_groups,estimator_name,final
         estimator_series_output = {}
         for i,param_group in enumerate(param_groups_joined):
             post_param_arr = np.array(post_estimator_variant_df[param_group].tolist())[:,None,None]
-            if is_paired_aggregetor:
+            if is_paired_aggregator:
                 pre_param_arr = np.array(pre_estimator_variant_df[param_group].tolist())[:,None,None]
                 estimator_output = aggregator(pre_param_arr,post_param_arr,axis=0)[0,0]
             else:
@@ -757,7 +757,7 @@ def get_estimator_df_single_variant(variant_df,param_groups,estimator_name,final
     else:
         return None
 
-def get_estimator_df(df,final_columns,param_groups_to_agg_list,estimator_names_to_agg,aggregators,is_paired_aggregetor_list,agg_names,\
+def get_estimator_df(df,final_columns,param_groups_to_agg_list,estimator_names_to_agg,aggregators,is_paired_aggregator_list,agg_names,\
                      variant_index='oDEPool7_id',trench_key='Multi-Experiment Phenotype Trenchid'):
     
     ## filter for trenches present pre and post treatment
@@ -782,9 +782,9 @@ def get_estimator_df(df,final_columns,param_groups_to_agg_list,estimator_names_t
         param_groups = param_groups_to_agg_list[i]
         estimator_name = estimator_names_to_agg[i]
         aggregator = aggregators[i]
-        is_paired_aggregetor = is_paired_aggregetor_list[i]
+        is_paired_aggregator = is_paired_aggregator_list[i]
         
-        if is_paired_aggregetor:
+        if is_paired_aggregator:
             working_test_input = test_input_pre_post
             working_sgrna_groupby = sgrna_groupby_pre_post
         else:
@@ -792,9 +792,9 @@ def get_estimator_df(df,final_columns,param_groups_to_agg_list,estimator_names_t
             working_sgrna_groupby = sgrna_groupby
         
         test_output = get_estimator_df_single_variant(test_input,param_groups,estimator_name,\
-                        final_columns,aggregator,is_paired_aggregetor,agg_name)
+                        final_columns,aggregator,is_paired_aggregator,agg_name)
         estimator_df = working_sgrna_groupby.apply(lambda x: get_estimator_df_single_variant(x,param_groups,estimator_name,\
-                                                final_columns,aggregator,is_paired_aggregetor,agg_name),meta=test_output).compute()
+                                                final_columns,aggregator,is_paired_aggregator,agg_name),meta=test_output).compute()
         
         estimator_df_output.append(estimator_df)
     estimator_df_output = pd.concat(estimator_df_output).drop(columns=variant_index).reset_index().drop(columns=["level_1"]).set_index(["Estimator","Variable(s)",variant_index]).sort_index()
@@ -988,7 +988,7 @@ def trenchwise_bootstrap_main(dask_controller,steady_state_df_path,preinduction_
         # trench_bootstrap_dd_joined = trench_bootstrap_dd_joined.repartition(partition_size="500MB",force=False)
         variant_min = trench_bootstrap_dd_joined.index.min().compute()
         variant_max = trench_bootstrap_dd_joined.index.max().compute()
-        trench_bootstrap_dd_joined = trench_bootstrap_dd_joined.repartition(divisions=list(range(variant_min,variant_max,n_variants_per_block)) + [variant_max], force=False)
+        trench_bootstrap_dd_joined = trench_bootstrap_dd_joined.repartition(divisions=list(range(int(variant_min),int(variant_max),n_variants_per_block)) + [int(variant_max)], force=False)
         to_parquet_checkpoint(dask_controller,trench_bootstrap_dd_joined,trench_bootstrap_path_temp,engine='pyarrow',overwrite=overwrite)
         
         dask_controller.daskclient.cancel(trench_bootstrap_dd_joined)
@@ -1016,7 +1016,7 @@ def get_trench_sample_df(trench_df,n_bootstraps_trench_density,n_bootstraps_tren
     return sampled_trench_df
 
 def trench_aggregate_bootstrap(variant_df,param_groups_to_agg_list,estimator_names_to_agg=["Mean"],aggregators=[np.nanmedian],\
-                               agg_names=["Mean"],is_paired_aggregetor_list=[False],n_bootstraps_trench_aggregate=1000,\
+                               agg_names=["Mean"],is_paired_aggregator_list=[False],n_bootstraps_trench_aggregate=1000,\
                                trench_key="Multi-Experiment Phenotype Trenchid",variant_index="oDEPool7_id"):
     
     n_bootstraps_trench_density = variant_df["Trench Bootstrap Sample"].max()+1
@@ -1027,14 +1027,14 @@ def trench_aggregate_bootstrap(variant_df,param_groups_to_agg_list,estimator_nam
     for i,estimator_name in enumerate(estimator_names_to_agg):
         
         param_groups = param_groups_to_agg_list[i]
-        is_paired_aggregetor = is_paired_aggregetor_list[i]
+        is_paired_aggregator = is_paired_aggregator_list[i]
         aggregator = aggregators[i]
         agg_name = agg_names[i]
         
         param_groups_joined = ["-".join(param_group) for param_group in param_groups]
         variant_estimator_df = variant_df.loc[estimator_name]
         
-        if is_paired_aggregetor:
+        if is_paired_aggregator:
             variant_estimator_df = variant_estimator_df.reset_index().set_index(trench_key).sort_index()
             pre_post_mask = variant_estimator_df.groupby(trench_key).apply(lambda x: sorted(x["Induction"].unique())==["Post","Pre"])
             trenchids_prepost = pre_post_mask[pre_post_mask].index.tolist()
@@ -1088,7 +1088,7 @@ def trench_aggregate_bootstrap_main(dask_controller,steady_state_df_path,estimat
 
     trench_bootstrap_path = steady_state_df_path + "_Trench_Estimator_Bootstrap"
     aggregators = unpaired_aggregators + paired_aggregators
-    is_paired_aggregetor_list=[False for i in range(len(unpaired_aggregators))]+[True for i in range(len(paired_aggregators))]
+    is_paired_aggregator_list=[False for i in range(len(unpaired_aggregators))]+[True for i in range(len(paired_aggregators))]
     temp_variant_bootstrap_path = steady_state_df_path + "_Variant_Estimator_Bootstrap_temp"
     variant_bootstrap_path = steady_state_df_path + "_Variant_Estimator_Bootstrap"
     estimator_path = steady_state_df_path + "_Estimators.pkl"
@@ -1121,12 +1121,12 @@ def trench_aggregate_bootstrap_main(dask_controller,steady_state_df_path,estimat
         variant_bootstrap_input = trench_bootstrap_dd.get_partition(0).compute()
         variant_bootstrap_output = variant_bootstrap_input.groupby(variant_index).apply(lambda x: trench_aggregate_bootstrap(x,param_groups_to_agg_list,\
                                                         estimator_names_to_agg=estimator_names_to_agg,aggregators=aggregators,agg_names=agg_names,\
-                                                        is_paired_aggregetor_list=is_paired_aggregetor_list,\
+                                                        is_paired_aggregator_list=is_paired_aggregator_list,\
                                                         n_bootstraps_trench_aggregate=n_bootstraps_trench_aggregate,variant_index=variant_index))
 
         variant_bootstrap_dd = trench_bootstrap_dd.groupby(variant_index).apply(lambda x: trench_aggregate_bootstrap(x,param_groups_to_agg_list,\
                                                         estimator_names_to_agg=estimator_names_to_agg,aggregators=aggregators,agg_names=agg_names,\
-                                                        is_paired_aggregetor_list=is_paired_aggregetor_list,\
+                                                        is_paired_aggregator_list=is_paired_aggregator_list,\
                                                         n_bootstraps_trench_aggregate=n_bootstraps_trench_aggregate,variant_index=variant_index),\
                                                         meta=variant_bootstrap_output)
         variant_bootstrap_dd = variant_bootstrap_dd.reset_index()
@@ -1212,13 +1212,13 @@ def trench_aggregate_bootstrap_main(dask_controller,steady_state_df_path,estimat
     if progress_state == 3:
         print("Done!")
 
-def bootstrap_null_model(control_bootstrap_df_path,estimator_param_name,aggregator,is_paired_aggregetor,agg_name,m_trenches_sampled_list,n_bootstraps_from_kdes = 100000,\
+def bootstrap_null_model(control_bootstrap_df_path,estimator_param_name,aggregator,is_paired_aggregator,agg_name,m_trenches_sampled_list,n_bootstraps_from_kdes = 100000,\
                          n_bootstrap_per_chunk=5000,trench_key="Multi-Experiment Phenotype Trenchid",min_obs_per_trench=3):
 
     control_trench_kde_df = dd.read_parquet(control_bootstrap_df_path, engine="pyarrow",calculate_divisions=True)
     trench_kde_df = control_trench_kde_df.loc[estimator_param_name].compute(scheduler="threads").reset_index()
 
-    if is_paired_aggregetor:
+    if is_paired_aggregator:
 
         trench_kde_df = trench_kde_df.set_index(trench_key).sort_index()
         pre_post_mask = trench_kde_df.groupby(trench_key).apply(lambda x: sorted(x["Induction"].unique())==["Post","Pre"])
@@ -1248,7 +1248,7 @@ def bootstrap_null_model(control_bootstrap_df_path,estimator_param_name,aggregat
         trench_post_kde_list = [item for item in trench_post_kde_list if item is not None]
 
     else:
-        trench_kde_df = trench_kde_df.reset_index().set_index(["Induction",trench_key]).sort_index()
+        trench_kde_df = trench_kde_df.set_index(["Induction",trench_key]).sort_index()
         trench_kde_df_post = trench_kde_df.loc["Post"]
         trench_kde_post_values_series = trench_kde_df_post.groupby(trench_key).apply(lambda x: np.array(x["Value"]))
         trench_post_fitted_kde_series = trench_kde_post_values_series.apply(lambda x: sp.stats.gaussian_kde(x[~np.isnan(x)]) if \
@@ -1279,7 +1279,7 @@ def bootstrap_null_model(control_bootstrap_df_path,estimator_param_name,aggregat
             sampled_post_values = post_kde.resample(multinomial_roll[i]) #d x N
             post_resample.append(sampled_post_values)
 
-            if is_paired_aggregetor:
+            if is_paired_aggregator:
                 pre_kde = trench_pre_kde_list[i]
                 sampled_pre_values = pre_kde.resample(multinomial_roll[i]) #d x N
                 pre_resample.append(sampled_pre_values)
@@ -1288,14 +1288,14 @@ def bootstrap_null_model(control_bootstrap_df_path,estimator_param_name,aggregat
         np.random.shuffle(post_resample)
         post_resample = post_resample.reshape((m_max,n_bootstraps_working_chunk))        
         
-        if is_paired_aggregetor:
+        if is_paired_aggregator:
             pre_resample = np.concatenate(pre_resample,axis=1).T #N x d
             np.random.shuffle(pre_resample)
             pre_resample = pre_resample.reshape((m_max,n_bootstraps_working_chunk))
             
         aggregated_vals_over_m = []
         for m in m_trenches_sampled_list:
-            if is_paired_aggregetor:
+            if is_paired_aggregator:
                 aggregated_vals = aggregator(pre_resample[:m,:,None],post_resample[:m,:,None],axis=0)[:,0]
             else:
                 aggregated_vals = aggregator(post_resample[:m,:,None],axis=0)[:,0]
@@ -1430,7 +1430,7 @@ def trench_aggregate_bootstrap_null_model_main(dask_controller,steady_state_df_p
     estimator_path = steady_state_df_path + "_Estimators.pkl"
     
     aggregators = unpaired_aggregators + paired_aggregators
-    is_paired_aggregetor_list=[False for i in range(len(unpaired_aggregators))]+[True for i in range(len(paired_aggregators))]
+    is_paired_aggregator_list=[False for i in range(len(unpaired_aggregators))]+[True for i in range(len(paired_aggregators))]
     
     wrapped_single_variable_list = [[variable] for variable in single_variable_list]
     wrapped_pearsonr_variable_list = [pearsonr_variable_list]
@@ -1449,12 +1449,12 @@ def trench_aggregate_bootstrap_null_model_main(dask_controller,steady_state_df_p
         estimator_param_names = ['-'.join([estimator_name]+param_group) for param_group in param_groups_to_agg_list[agg_idx]]
         aggregator = aggregators[agg_idx]
         agg_name = agg_names[agg_idx]
-        is_paired_aggregetor = is_paired_aggregetor_list[agg_idx]
+        is_paired_aggregator = is_paired_aggregator_list[agg_idx]
         for param_idx,estimator_param_name in enumerate(estimator_param_names):
-            variant_bootstrap_delayed = dask.delayed(bootstrap_null_model)(control_trench_bootstrap_path,estimator_param_name,aggregator,is_paired_aggregetor,agg_name,m_trenches_sampled_list,n_bootstraps_trench_aggregate)
+            variant_bootstrap_delayed = dask.delayed(bootstrap_null_model)(control_trench_bootstrap_path,estimator_param_name,aggregator,is_paired_aggregator,agg_name,m_trenches_sampled_list,n_bootstraps_trench_aggregate)
             variant_bootstrap_delayed_list.append(variant_bootstrap_delayed)
 
-    test_output = bootstrap_null_model(control_trench_bootstrap_path,estimator_param_name,aggregator,is_paired_aggregetor,agg_name,[m_trenches_sampled_list[10]],100)
+    test_output = bootstrap_null_model(control_trench_bootstrap_path,estimator_param_name,aggregator,is_paired_aggregator,agg_name,[m_trenches_sampled_list[10]],100)
 
     variant_control_bootstrap_output = dd.from_delayed(variant_bootstrap_delayed_list,meta=test_output)
     variant_control_bootstrap_output.to_parquet(control_variant_bootstrap_path,engine="pyarrow",overwrite=True)
