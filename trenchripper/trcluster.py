@@ -57,8 +57,7 @@ class dask_controller: #adapted from Charles' code
 
     def startdask(self):
         if self.local:
-            self.daskclient = Client()
-            self.daskclient.cluster.scale(self.n_workers)
+            self.daskclient = Client(n_workers=self.n_workers,threads_per_worker=1,memory_limit=self.memory)
         else:
             if self.account is None:
                 self.daskcluster = SLURMCluster(n_workers=self.n_workers_min,queue=self.queue,death_timeout=self.death_timeout,walltime=self.walltime,\
