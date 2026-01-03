@@ -25,7 +25,7 @@ def trim_memory() -> int:
 class dask_controller: #adapted from Charles' code
     def __init__(self,n_workers=6,n_workers_min=6,local=True,queue="short",death_timeout=60.,\
                  walltime='01:00:00',cores=1,processes=1,memory='6GB',\
-                 working_directory="./",job_extra_directives=[]):
+                 working_directory="./",job_extra_directives=[],account=None):
         self.local = local
         self.n_workers = n_workers
         self.n_workers_min = n_workers_min
@@ -37,6 +37,7 @@ class dask_controller: #adapted from Charles' code
         self.cores = cores
         self.working_directory = working_directory
         self.job_extra_directives = job_extra_directives
+        self.account = account
 
         self.futures = {}
 
@@ -59,9 +60,14 @@ class dask_controller: #adapted from Charles' code
             self.daskclient = Client()
             self.daskclient.cluster.scale(self.n_workers)
         else:
-            self.daskcluster = SLURMCluster(n_workers=self.n_workers_min,queue=self.queue,death_timeout=self.death_timeout,walltime=self.walltime,\
-                                   processes=self.processes,memory=self.memory,cores=self.cores,local_directory=self.working_directory,\
-                                log_directory=self.working_directory,worker_extra_args=self.worker_extra_args,job_extra_directives=self.job_extra_directives)
+            if self.account is None:
+                self.daskcluster = SLURMCluster(n_workers=self.n_workers_min,queue=self.queue,death_timeout=self.death_timeout,walltime=self.walltime,\
+                                       processes=self.processes,memory=self.memory,cores=self.cores,local_directory=self.working_directory,\
+                                    log_directory=self.working_directory,worker_extra_args=self.worker_extra_args,job_extra_directives=self.job_extra_directives)
+            else:
+                self.daskcluster = SLURMCluster(n_workers=self.n_workers_min,queue=self.queue,death_timeout=self.death_timeout,walltime=self.walltime,\
+                                       processes=self.processes,memory=self.memory,cores=self.cores,local_directory=self.working_directory,\
+                                    log_directory=self.working_directory,worker_extra_args=self.worker_extra_args,job_extra_directives=self.job_extra_directives,account=self.account)
             self.daskcluster.adapt(minimum=self.n_workers_min, maximum=self.n_workers,\
                                    interval="1m",wait_count=10)
             self.daskclient = Client(self.daskcluster)

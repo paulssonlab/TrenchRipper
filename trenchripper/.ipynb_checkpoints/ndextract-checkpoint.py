@@ -1,6 +1,7 @@
 # fmt: off
 import h5py
 import os
+import nd2
 import shutil
 import copy
 # import h5py_cache #not using this anymore
@@ -378,9 +379,236 @@ class hdf5_fov_extractor:
             shutil.rmtree(self.hdf5path)
             os.rename(self.tempregpath,self.hdf5path)
 
-
-
 class nd_metadata_handler:
+    def __init__(self,nd2filename,ignore_fovmetadata=False,nd2reader_override={}):
+        self.nd2filename = nd2filename
+        self.ignore_fovmetadata = ignore_fovmetadata
+        self.nd2reader_override = nd2reader_override
+
+    def make_fov_df(self,nd2file, exp_metadata): #only records values for single timepoints, does not seperate between channels....
+        img_metadata = nd2file.parser._raw_metadata
+        num_fovs = exp_metadata['num_fovs']
+        num_frames = exp_metadata['num_frames']
+        num_images_expected = num_fovs*num_frames
+
+        if img_metadata.x_data != None:
+            x = np.reshape(img_metadata.x_data,(-1,num_fovs)).T
+            y = np.reshape(img_metadata.y_data,(-1,num_fovs)).T
+            z = np.reshape(img_metadata.z_data,(-1,num_fovs)).T
+        else:
+            positions = img_metadata.image_metadata[b'SLxExperiment'][b'ppNextLevelEx'][b''][b'uLoopPars'][b'Points'][b'']
+            x = []
+            y = []
+            z = []
+            for position in positions:
+                x.append([position[b'dPosX']]*num_frames)
+                y.append([position[b'dPosY']]*num_frames)
+                z.append([position[b'dPosZ']]*num_frames)
+            x = np.array(x)
+            y = np.array(y)
+            z = np.array(z)
+
+
+        time_points = x.shape[1]
+        acq_times = np.reshape(np.array(list(img_metadata.acquisition_times)[:num_images_expected]),(-1,num_fovs)).T
+        pos_label = np.repeat(np.expand_dims(np.add.accumulate(np.ones(num_fovs,dtype=int))-1,1),time_points,1) ##???
+        time_point_labels = np.repeat(np.expand_dims(np.add.accumulate(np.ones(time_points,dtype=int))-1,1),num_fovs,1).T
+
+        print("num_fovs, time_points:", num_fovs, time_points)
+        print("pos_label:", pos_label.shape, pos_label.size)
+        print("time_point_labels:", time_point_labels.shape, time_point_labels.size)
+        
+        for name, arr in [("acq_times", acq_times), ("x", x), ("y", y), ("z", z)]:
+            try:
+                print(name, type(arr), "shape:", getattr(arr, "shape", None), "size:", getattr(arr, "size", None), "len:", len(arr))
+            except Exception as e:
+                print(name, type(arr), "len error:", e)
+
+        output = pd.DataFrame({'fov':pos_label.flatten(),'timepoints':time_point_labels.flatten(),'t':acq_times.flatten(),'x':x.flatten(),'y':y.flatten(),'z':z.flatten()})
+        output = output.astype({'fov': int, 'timepoints':int, 't': float, 'x': float,'y': float,'z': float})
+
+        output = output[~((output['x'] == 0.)&(output['y'] == 0.)&(output['z'] == 0.))].reset_index(drop=True) ##bootstrapped to fix issue when only some FOVs are selected (return if it causes problems in the future)
+        output = output.set_index(["fov","timepoints"], drop=True, append=False, inplace=False)
+
+        return output
+
+    def get_metadata(self):
+        """
+        Reads image and experiment metadata from ND2 using the `nd2` library,
+        while preserving the keys/structure expected by the existing pipeline.
+        """
+
+        # --- helpers ---
+        def _first_loop(experiment, loop_type_name: str):
+            """Return first loop in ND2File.experiment with .type == loop_type_name, else None."""
+            for lp in (experiment or []):
+                if getattr(lp, "type", None) == loop_type_name:
+                    return lp
+            return None
+    
+        with nd2.ND2File(self.nd2filename) as f:
+            attrs = f.attributes
+            sizes = dict(f.sizes)  # ordered mapping, but dict is fine for lookups
+            text_info = f.text_info or {}
+            md = f.metadata
+    
+            # ---- channels (list[str]) ----
+            if getattr(md, "channels", None):
+                channel_names = [ch.channel.name for ch in md.channels]
+            else:
+                # fallback: infer count from sizes
+                ccount = int(sizes.get("C", 1))
+                channel_names = [f"Ch{c}" for c in range(ccount)]
+    
+            # ---- timepoints / frames ----
+            time_loop = _first_loop(getattr(f, "experiment", None), "TimeLoop")
+            ne_time_loop = _first_loop(getattr(f, "experiment", None), "NETimeLoop")
+            if time_loop is not None:
+                num_frames = int(time_loop.count)
+            elif ne_time_loop is not None:
+                num_frames = int(ne_time_loop.count)
+            else:
+                num_frames = int(sizes.get("T", 1))
+    
+            frames = list(range(num_frames))
+    
+            # ---- z stack ----
+            z_loop = _first_loop(getattr(f, "experiment", None), "ZStackLoop")
+            if z_loop is not None:
+                z_levels = int(z_loop.count)
+                # approximate z coordinates relative to the "home" plane
+                step = float(getattr(z_loop.parameters, "stepUm", 0.0) or 0.0)
+                home = int(getattr(z_loop.parameters, "homeIndex", 0) or 0)
+                bottom_to_top = bool(getattr(z_loop.parameters, "bottomToTop", True))
+                z_coords = [(i - home) * step for i in range(z_levels)]
+                if not bottom_to_top:
+                    z_coords = list(reversed(z_coords))
+            else:
+                z_levels = int(sizes.get("Z", 1))
+                z_coords = [0.0] * z_levels if z_levels > 0 else []
+    
+            # ---- fields of view / positions ----
+            xy_loop = _first_loop(getattr(f, "experiment", None), "XYPosLoop")
+            if xy_loop is not None and getattr(xy_loop.parameters, "points", None):
+                points = list(xy_loop.parameters.points)
+                fields_of_view = [
+                    (getattr(p, "name", None) or f"FOV{i}") for i, p in enumerate(points)
+                ]
+            else:
+                # single-position file (no XYPosLoop)
+                fields_of_view = ["FOV0"]
+    
+            # ---- pixel size ----
+            pixel_microns = None
+            try:
+                vox = f.voxel_size()  # typically has .x, .y, .z
+                pixel_microns = float(getattr(vox, "x", None))
+            except Exception:
+                pixel_microns = None
+    
+            # fallback: use volume axesCalibration if available
+            if pixel_microns is None and getattr(md, "channels", None):
+                try:
+                    pixel_microns = float(md.channels[0].volume.axesCalibration[0])
+                except Exception:
+                    pixel_microns = None
+    
+            # ---- height/width ----
+            height = int(getattr(attrs, "heightPx", sizes.get("Y", 0)))
+            width = int(getattr(attrs, "widthPx", sizes.get("X", 0)))
+    
+            # ---- date ----
+            date = text_info.get("date", None)
+    
+            # ---- total images per channel (pipeline expectation) ----
+            # This historically behaved like: n_fov * n_frames * n_z (not including channels).
+            total_images_per_channel = len(fields_of_view) * num_frames * max(z_levels, 1)
+    
+            # ---- pack exp_metadata with the SAME KEYS your code expects ----
+            exp_metadata = {
+                "height": height,
+                "width": width,
+                "date": date,
+                "fields_of_view": fields_of_view,
+                "frames": frames,
+                "channels": channel_names,
+                "pixel_microns": pixel_microns,
+                "z_coordinates": z_coords,
+                "z_levels": z_levels,
+                "total_images_per_channel": total_images_per_channel,
+                "num_frames": num_frames,
+            }
+    
+            # apply manual overrides (preserve your existing behavior)
+            if self.nd2reader_override is not None:
+                exp_metadata.update(self.nd2reader_override)
+    
+            exp_metadata["num_fovs"] = len(exp_metadata["fields_of_view"])
+    
+            # ---- settings: saving standard description as list, switch to dict if important later ----
+
+            if 'description' in f.text_info.keys():
+                settings = f.text_info['description'].split('\r\n')
+            else:
+                settings = {}
+
+            exp_metadata["settings"] = settings
+            
+            # ---- fov_metadata (same DF schema as before) ----
+            fov_metadata = None
+            if not self.ignore_fovmetadata:
+            
+                records = {}
+                
+                seq_count = int(getattr(attrs, "sequenceCount", 0) or 0)
+                for seq_i in range(seq_count):
+                    fm = f.frame_metadata(seq_i)
+                    fm_idx = f.loop_indices[seq_i]
+                    # time coordinate
+                    t_idx = int(fm_idx.get("T"))
+                    fov_idx = int(fm_idx.get("P"))
+            
+                    # find channel 0 entry in this frame
+                    ch0 = None
+                    for fc in getattr(fm, "channels", []) or []:
+                        if getattr(getattr(fc, "channel", None), "index", None) == 0:
+                            ch0 = fc
+                            break
+                    
+                    if ch0 is None:
+                        continue
+            
+                    # relative_time = ch0.time.relativeTimeMs
+                    # x_pos, y_pos, z_pos = ch0.position.stagePositionUm.x,ch0.position.stagePositionUm.y,ch0.position.stagePositionUm.z
+                
+                    pos = getattr(getattr(ch0, "position", None), "stagePositionUm", None)
+                    ts = getattr(ch0, "time", None)
+                    rel_ms = getattr(ts, "relativeTimeMs", None)
+                
+                    x = getattr(pos, "x", float("nan")) if pos is not None else float("nan")
+                    y = getattr(pos, "y", float("nan")) if pos is not None else float("nan")
+                    z = getattr(pos, "z", float("nan")) if pos is not None else float("nan")
+                    t_val = (float(rel_ms) / 1000.0) if rel_ms is not None else float("nan")
+                
+                    records[(fov_idx, t_idx)] = (t_val, x, y, z)
+                
+                rows = []
+                for fov in range(exp_metadata["num_fovs"]):
+                    for t in range(num_frames):
+                        t_val, x, y, z = records.get((fov, t), (float("nan"), float("nan"), float("nan"), float("nan")))
+                        rows.append({"fov": fov, "timepoints": t, "t": t_val, "x": x, "y": y, "z": z})
+                
+                fov_metadata = (
+                    pd.DataFrame(rows)
+                    .set_index(["fov", "timepoints"])
+                    .sort_index()
+                )
+                return exp_metadata, fov_metadata
+            else:
+                return exp_metadata
+
+
+class old_nd_metadata_handler:
     def __init__(self,nd2filename,ignore_fovmetadata=False,nd2reader_override={}):
         self.nd2filename = nd2filename
         self.ignore_fovmetadata = ignore_fovmetadata
@@ -455,6 +683,17 @@ class nd_metadata_handler:
         acq_times = np.reshape(np.array(list(img_metadata.acquisition_times)[:num_images_expected]),(-1,num_fovs)).T
         pos_label = np.repeat(np.expand_dims(np.add.accumulate(np.ones(num_fovs,dtype=int))-1,1),time_points,1) ##???
         time_point_labels = np.repeat(np.expand_dims(np.add.accumulate(np.ones(time_points,dtype=int))-1,1),num_fovs,1).T
+
+        print("num_fovs, time_points:", num_fovs, time_points)
+        print("pos_label:", pos_label.shape, pos_label.size)
+        print("time_point_labels:", time_point_labels.shape, time_point_labels.size)
+        
+        for name, arr in [("acq_times", acq_times), ("x", x), ("y", y), ("z", z)]:
+            try:
+                print(name, type(arr), "shape:", getattr(arr, "shape", None), "size:", getattr(arr, "size", None), "len:", len(arr))
+            except Exception as e:
+                print(name, type(arr), "len error:", e)
+
 
         output = pd.DataFrame({'fov':pos_label.flatten(),'timepoints':time_point_labels.flatten(),'t':acq_times.flatten(),'x':x.flatten(),'y':y.flatten(),'z':z.flatten()})
         output = output.astype({'fov': int, 'timepoints':int, 't': float, 'x': float,'y': float,'z': float})
