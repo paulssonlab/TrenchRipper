@@ -5,7 +5,7 @@ with open("README.md", "r") as fh:
 
 setuptools.setup(
     name="TrenchRipper",
-    version="1.0.1",
+    version="1.0.2",
     author="Daniel Eaton",
     packages=setuptools.find_packages(),
     install_requires=[
