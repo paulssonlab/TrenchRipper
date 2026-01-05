@@ -566,10 +566,20 @@ class nd_metadata_handler:
                 for seq_i in range(seq_count):
                     fm = f.frame_metadata(seq_i)
                     fm_idx = f.loop_indices[seq_i]
-                    # time coordinate
-                    t_idx = int(fm_idx.get("T"))
-                    fov_idx = int(fm_idx.get("P"))
-            
+                    ## time coordinate
+                    t_idx = fm_idx.get("T")
+                    if t_idx is None:
+                        t_idx = 0
+                    else:
+                        t_idx = int(t_idx)
+
+                    ## fov number
+                    fov_idx = fm_idx.get("P")
+                    if fov_idx is None:
+                        fov_idx = 0
+                    else:
+                        fov_idx = int(fov_idx)
+                                    
                     # find channel 0 entry in this frame
                     ch0 = None
                     for fc in getattr(fm, "channels", []) or []:
